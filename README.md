@@ -6,6 +6,41 @@ The "net" package is modified to use netdev, TinyGo's network device driver inte
 Netdev replaces the OS syscall interface for I/O access to the networking
 device.  See drivers/netdev for more information on netdev.
 
+---
+
+> ## Skycoin fork — native host netdev
+>
+> **This is a fork** (branch `native-netdev-ipv6`). It adds `netdev_native.go`, a
+> default host netdev backed by **raw Linux syscalls**, so `net.Dial` / `net.Listen`
+> / DNS lookups **just work on a native Linux host** under TinyGo — with no network
+> driver and no host-specific setup. Purpose: compile the Skycoin/Skywire daemons
+> with TinyGo for ~order-of-magnitude smaller release binaries. See
+> [skycoin/skycoin#2902](https://github.com/skycoin/skycoin/issues/2902).
+>
+> Upstream stock TinyGo has **no** default netdev — a native `net.Dial`/`Listen`
+> fails at runtime with `Netdev not set`. This fork fixes exactly that.
+>
+> **You do NOT need to fork or rebuild the TinyGo compiler to use this.** Install
+> stock TinyGo (0.41.1+) and overlay this repo's contents over TinyGo's bundled
+> `net` package via a bind mount, then build normally:
+>
+> ```sh
+> # CI (runner is root):
+> sudo mount --bind  /path/to/this/net  "$(tinygo env TINYGOROOT)/src/net"
+> tinygo build -o app .
+>
+> # Local / unprivileged (ephemeral: mount lives only inside the namespace):
+> unshare -rm bash -c '
+>   mount --bind /path/to/this/net "$(tinygo env TINYGOROOT)/src/net"
+>   tinygo build -o app .'
+> ```
+>
+> Full rationale, verified test, and the methods that do **not** work (symlink /
+> hardlink farms, TINYGOROOT copy) are in
+> [`docs/skycoin-native-build.md`](docs/skycoin-native-build.md).
+
+---
+
 #### Table of Contents
 
 - [Using "net" and "net/http" Packages](#using-net-and-nethttp-packages)

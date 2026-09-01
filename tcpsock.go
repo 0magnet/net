@@ -208,6 +208,11 @@ func (c *TCPConn) SyscallConn() (syscall.RawConn, error) {
 
 func (c *TCPConn) Read(b []byte) (int, error) {
 	n, err := netdev.Recv(c.fd, b, 0, c.readDeadline)
+	for err == errPollInterrupted {
+		// A concurrent deadline change interrupted the wait; retry with the
+		// fresh deadline. Nothing was read when the wait was interrupted.
+		n, err = netdev.Recv(c.fd, b, 0, c.readDeadline)
+	}
 	// Turn the -1 socket error into 0 and let err speak for error
 	if n < 0 {
 		n = 0
@@ -219,15 +224,22 @@ func (c *TCPConn) Read(b []byte) (int, error) {
 }
 
 func (c *TCPConn) Write(b []byte) (int, error) {
-	n, err := netdev.Send(c.fd, b, 0, c.writeDeadline)
-	// Turn the -1 socket error into 0 and let err speak for error
-	if n < 0 {
-		n = 0
+	total := 0
+	for {
+		n, err := netdev.Send(c.fd, b[total:], 0, c.writeDeadline)
+		if n > 0 {
+			total += n
+		}
+		if err == errPollInterrupted {
+			// A concurrent deadline change interrupted the wait; keep sending
+			// the remainder under the fresh deadline.
+			continue
+		}
+		if err != nil {
+			err = &OpError{Op: "write", Net: c.net, Source: c.laddr, Addr: c.raddr, Err: err}
+		}
+		return total, err
 	}
-	if err != nil {
-		err = &OpError{Op: "write", Net: c.net, Source: c.laddr, Addr: c.raddr, Err: err}
-	}
-	return n, err
 }
 
 func (c *TCPConn) Close() error {
@@ -245,6 +257,8 @@ func (c *TCPConn) RemoteAddr() Addr {
 func (c *TCPConn) SetDeadline(t time.Time) error {
 	c.readDeadline = t
 	c.writeDeadline = t
+	pollInterrupt(c.fd, false)
+	pollInterrupt(c.fd, true)
 	return nil
 }
 
@@ -284,11 +298,13 @@ func (c *TCPConn) SetKeepAlivePeriod(d time.Duration) error {
 
 func (c *TCPConn) SetReadDeadline(t time.Time) error {
 	c.readDeadline = t
+	pollInterrupt(c.fd, false)
 	return nil
 }
 
 func (c *TCPConn) SetWriteDeadline(t time.Time) error {
 	c.writeDeadline = t
+	pollInterrupt(c.fd, true)
 	return nil
 }
 
@@ -395,6 +411,19 @@ func listenTCP(laddr *TCPAddr) (Listener, error) {
 		return nil, err
 	}
 
+	if laddr.Port == 0 {
+		// Binding port 0 asks for an ephemeral port; report the port that was
+		// actually assigned, like the standard library, so callers can dial
+		// ln.Addr(). Netdevs that cannot report it keep port 0.
+		if g, ok := netdev.(interface {
+			GetSockname(sockfd int) (netip.AddrPort, error)
+		}); ok {
+			if ap, err := g.GetSockname(fd); err == nil && ap.Port() != 0 {
+				laddr = &TCPAddr{IP: laddr.IP, Port: int(ap.Port())}
+			}
+		}
+	}
+
 	return &listener{fd: fd, laddr: laddr}, nil
 }
 
@@ -462,4 +491,12 @@ func (l *TCPListener) AcceptTCP() (*TCPConn, error) {
 // TINYGO: no-op; netdev.Accept has no deadline support.
 func (l *TCPListener) SetDeadline(t time.Time) error {
 	return nil
+}
+
+// SyscallConn returns a raw network connection.
+// This implements the [syscall.Conn] interface. It mirrors the TCPConn stub —
+// TCPListener was missing it, so callers that require syscall.Conn (e.g.
+// github.com/tetratelabs/wazero's socket layer) failed to compile.
+func (l *TCPListener) SyscallConn() (syscall.RawConn, error) {
+	return nil, errors.New("SyscallConn not implemented")
 }

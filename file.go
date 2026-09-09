@@ -23,3 +23,13 @@ func FileListener(f *os.File) (ln Listener, err error) {
 func FileConn(f *os.File) (c Conn, err error) {
 	return nil, errFileNotImplemented
 }
+
+// File returns a copy of the underlying os.File.
+//
+// TINYGO: same as the constructors above, the other way round — a listener
+// here has no OS file descriptor to hand back. fasthttp's prefork helper
+// calls this to pass a listener to a child process, which neither this net
+// package nor a wasm target can do.
+func (l *TCPListener) File() (f *os.File, err error) {
+	return nil, errFileNotImplemented
+}

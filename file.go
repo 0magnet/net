@@ -5,10 +5,8 @@ import (
 	"os"
 )
 
-// TINYGO: The netdev-based net package manages its own file descriptors and
-// cannot adopt an arbitrary OS file descriptor, so the File* constructors are
-// not implemented. They exist so that packages referencing them (e.g. gin's
-// RunFd helper) compile; callers that actually use them get a clear error.
+// TINYGO: this package manages its own file descriptors and cannot adopt an
+// arbitrary OS fd, so these exist only to let callers compile.
 
 var errFileNotImplemented = errors.New("net: File-based listeners/conns are not implemented on this target")
 
@@ -21,5 +19,12 @@ func FileListener(f *os.File) (ln Listener, err error) {
 // FileConn returns a copy of the network connection corresponding to the open
 // file f.
 func FileConn(f *os.File) (c Conn, err error) {
+	return nil, errFileNotImplemented
+}
+
+// File returns a copy of the underlying os.File.
+//
+// TINYGO: a listener here has no OS file descriptor to hand back.
+func (l *TCPListener) File() (f *os.File, err error) {
 	return nil, errFileNotImplemented
 }

@@ -210,8 +210,8 @@ func (c *TCPConn) SyscallConn() (syscall.RawConn, error) {
 func (c *TCPConn) Read(b []byte) (int, error) {
 	n, err := netdev.Recv(c.fd, b, 0, c.readDeadline)
 	for err == errPollInterrupted {
-		// A concurrent deadline change interrupted the wait; retry with the
-		// fresh deadline. Nothing was read when the wait was interrupted.
+		// A concurrent deadline change interrupted the wait. Retry with the
+		// fresh deadline, since nothing was read.
 		n, err = netdev.Recv(c.fd, b, 0, c.readDeadline)
 	}
 	// Turn the -1 socket error into 0 and let err speak for error
@@ -232,7 +232,7 @@ func (c *TCPConn) Write(b []byte) (int, error) {
 			total += n
 		}
 		if err == errPollInterrupted {
-			// A concurrent deadline change interrupted the wait; keep sending
+			// A concurrent deadline change interrupted the wait. Keep sending
 			// the remainder under the fresh deadline.
 			continue
 		}
@@ -495,9 +495,9 @@ func (l *TCPListener) SetDeadline(t time.Time) error {
 }
 
 // SyscallConn returns a raw network connection.
-// This implements the [syscall.Conn] interface. It mirrors the TCPConn stub —
-// TCPListener was missing it, so callers that require syscall.Conn (e.g.
-// github.com/tetratelabs/wazero's socket layer) failed to compile.
+// This implements the [syscall.Conn] interface.
+//
+// TINYGO: mirrors the TCPConn stub. wazero's socket layer requires it.
 func (l *TCPListener) SyscallConn() (syscall.RawConn, error) {
 	return nil, errors.New("SyscallConn not implemented")
 }

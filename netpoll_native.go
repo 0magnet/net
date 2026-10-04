@@ -1,16 +1,7 @@
 //go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
 
-// TINYGO: A small epoll-based network poller for the host (native) netdev.
-//
-// The netdev sockets are non-blocking. When a syscall would block (EAGAIN), the
-// calling goroutine registers its interest with this poller and blocks on a
-// channel until the fd is ready, its deadline passes, or the fd is closed. A
-// single background goroutine runs epoll_wait and wakes the parked goroutines.
-//
-// This replaces the previous blocking-syscall + SO_*TIMEO approach so that:
-//   - a blocked read/accept parks the goroutine instead of pinning a thread;
-//   - closing an fd unblocks every goroutine parked on it (real cancellation),
-//     which is what lets a graceful shutdown — and Ctrl+C — actually complete.
+// TINYGO: a small epoll poller for the host netdev. A goroutine that would
+// block parks here until the fd is ready, its deadline passes, or it closes.
 
 package net
 
@@ -31,11 +22,8 @@ type pollDesc struct {
 	writers []chan error
 	inEpoll bool
 
-	// readInterrupt/writeInterrupt record an interrupt() that arrived while no
-	// waiter was parked in that direction, so the next wait() in that direction
-	// returns immediately instead of parking with a deadline that may already
-	// be stale. This closes the race between a deadline change and a goroutine
-	// that captured the old deadline but has not parked yet.
+	// Records an interrupt that arrived with no waiter parked, so the next
+	// wait in that direction returns at once instead of using a stale deadline.
 	readInterrupt  bool
 	writeInterrupt bool
 }
@@ -119,7 +107,7 @@ func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 		p.fds[fd] = pd
 	}
 	if (write && pd.writeInterrupt) || (!write && pd.readInterrupt) {
-		// An interrupt arrived before we parked; consume it and let the caller
+		// An interrupt arrived before we parked. Consume it and let the caller
 		// re-evaluate its deadline.
 		if write {
 			pd.writeInterrupt = false
@@ -176,19 +164,16 @@ func (p *netPoller) cancelWaiter(fd int, write bool, ch chan error) {
 	p.arm(pd)
 }
 
-// interrupt wakes every goroutine parked on fd in the given direction with
-// errPollInterrupted so it re-evaluates its deadline (a deadline change on a
-// connection must take effect on I/O that is already blocked — net/http's
-// abortPendingRead relies on this). If no waiter is parked yet, the interrupt
-// is remembered and consumed by the next wait() in that direction.
+// interrupt wakes every goroutine parked on fd in the given direction so it
+// re-evaluates its deadline. net/http's abortPendingRead relies on this.
 func (p *netPoller) interrupt(fd int, write bool) {
 	if p.err != nil {
 		return
 	}
 	p.mu.Lock()
 	if p.fds == nil {
-		// Poller never started: nothing can be parked, and any future wait()
-		// will capture the new deadline anyway.
+		// The poller never started, so nothing can be parked. Any later
+		// wait() captures the new deadline anyway.
 		p.mu.Unlock()
 		return
 	}
@@ -245,8 +230,8 @@ func (p *netPoller) close(fd int) {
 	}
 }
 
-// loop is the poller's background goroutine: it waits for epoll events and wakes
-// the corresponding parked goroutines.
+// loop is the poller's background goroutine. It waits for epoll events
+// and wakes the corresponding parked goroutines.
 func (p *netPoller) loop() {
 	events := make([]syscall.EpollEvent, 64)
 	for {
@@ -278,7 +263,7 @@ func (p *netPoller) loop() {
 				}
 				pd.writers = nil
 			}
-			// EPOLLONESHOT disabled the fd; re-arm for any remaining waiters.
+			// EPOLLONESHOT disabled the fd, so re-arm for any remaining waiters.
 			pd.inEpoll = true // it is still registered, just disarmed
 			p.arm(pd)
 		}

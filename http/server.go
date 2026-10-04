@@ -3260,12 +3260,10 @@ func ListenAndServe(addr string, handler Handler) error {
 	return server.ListenAndServe()
 }
 
-// ServeTLS accepts incoming HTTPS connections on the listener l, wrapping each
-// with a TLS server using the given certificate/key files (or the certificates
-// already configured in srv.TLSConfig), then serves requests on them.
+// ServeTLS accepts HTTPS connections on l, wrapping each with a TLS server
+// using the given certificate and key files or srv.TLSConfig.
 //
-// TINYGO: uses software crypto/tls (available on the host/native target); no
-// HTTP/2 negotiation is performed.
+// TINYGO: uses software crypto/tls. No HTTP/2 negotiation.
 func (srv *Server) ServeTLS(l net.Listener, certFile, keyFile string) error {
 	config := srv.TLSConfig
 	if config == nil {

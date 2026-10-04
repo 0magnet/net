@@ -98,14 +98,13 @@ type Dialer struct {
 	// Control, if not nil, is called after creating the network connection but
 	// before actually dialing.
 	//
-	// TINYGO: present for API compatibility (callers such as google.golang.org/
-	// grpc set it); the netdev-backed dial does not expose a raw syscall.RawConn,
-	// so this field is not invoked.
+	// TINYGO: present for API compatibility. The netdev dial exposes no raw
+	// syscall.RawConn, so this is never invoked.
 	Control func(network, address string, c syscall.RawConn) error
 
 	// ControlContext is like Control but additionally receives the context.
 	//
-	// TINYGO: present for API compatibility; not invoked (see Control).
+	// TINYGO: present for API compatibility. Not invoked, see Control.
 	ControlContext func(ctx context.Context, network, address string, c syscall.RawConn) error
 }
 

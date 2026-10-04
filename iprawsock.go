@@ -120,8 +120,7 @@ func (c *IPConn) ReadFrom(b []byte) (int, Addr, error) {
 	return 0, nil, errors.New("ReadFrom not implemented")
 }
 
-// Read implements io.Reader / net.Conn. IPConn was missing it, which broke
-// callers that type-switch it as an io.Reader (e.g. google.golang.org/grpc).
+// Read implements io.Reader. grpc needs IPConn to satisfy it.
 func (c *IPConn) Read(b []byte) (int, error) {
 	n, _, err := c.ReadFrom(b)
 	return n, err

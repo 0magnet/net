@@ -2796,6 +2796,10 @@ type Server struct {
 	// See https://go.dev/issue/67813.
 	HTTP2 *HTTP2Config
 
+	// DisableClientPriority mirrors Go 1.27. golang.org/x/net/http2 reads it;
+	// this server speaks no HTTP/2, so it has no effect here.
+	DisableClientPriority bool
+
 	inShutdown atomicBool // true when server is in shutdown
 
 	disableKeepAlives int32     // accessed atomically.

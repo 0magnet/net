@@ -50,6 +50,10 @@ type Transport struct {
 	// DisableKeepAlives, if true, disables HTTP keep-alives.
 	DisableKeepAlives bool
 
+	// ForceAttemptHTTP2 mirrors Go. This transport speaks HTTP/1 only, so it
+	// has no effect here.
+	ForceAttemptHTTP2 bool
+
 	// DisableCompression, if true, prevents the Transport from requesting
 	// compression with an "Accept-Encoding: gzip" request header.
 	DisableCompression bool

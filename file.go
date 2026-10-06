@@ -28,3 +28,9 @@ func FileConn(f *os.File) (c Conn, err error) {
 func (l *TCPListener) File() (f *os.File, err error) {
 	return nil, errFileNotImplemented
 }
+
+// FilePacketConn returns a copy of the packet network connection
+// corresponding to the open file f.
+func FilePacketConn(f *os.File) (c PacketConn, err error) {
+	return nil, errFileNotImplemented
+}

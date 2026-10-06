@@ -14,7 +14,6 @@ package net
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"internal/bytealg"
 	"syscall"
@@ -241,7 +240,19 @@ type ListenConfig struct {
 // The ctx argument is used while resolving the address on which to listen;
 // it does not affect the returned Listener.
 func (lc *ListenConfig) Listen(ctx context.Context, network, address string) (Listener, error) {
-	return nil, errors.New("dial:ListenConfig:Listen not implemented")
+	switch network {
+	case "tcp", "tcp4", "tcp6":
+	default:
+		if lc.Control != nil {
+			return nil, fmt.Errorf("ListenConfig.Control is not supported for network %s", network)
+		}
+		return Listen(network, address)
+	}
+	laddr, err := ResolveTCPAddr(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return listenTCPControl(laddr, lc.control(network, address))
 }
 
 // ListenPacket announces on the local network address.
@@ -252,7 +263,30 @@ func (lc *ListenConfig) Listen(ctx context.Context, network, address string) (Li
 // The ctx argument is used while resolving the address on which to listen;
 // it does not affect the returned PacketConn.
 func (lc *ListenConfig) ListenPacket(ctx context.Context, network, address string) (PacketConn, error) {
-	return nil, errors.New("dial:ListenConfig:ListenPacket not implemented")
+	switch network {
+	case "udp", "udp4":
+	default:
+		return nil, fmt.Errorf("Network %s not supported", network)
+	}
+	laddr, err := ResolveUDPAddr(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return listenUDPControl(network, laddr, lc.control(network, address))
+}
+
+// control adapts Control to the socket hook, or returns nil when unset.
+func (lc *ListenConfig) control(network, address string) func(fd int) error {
+	if lc.Control == nil {
+		return nil
+	}
+	return func(fd int) error {
+		rc, err := newRawConn(fd)
+		if err != nil {
+			return err
+		}
+		return lc.Control(network, address, rc)
+	}
 }
 
 func parseNetwork(ctx context.Context, network string, needsProto bool) (afnet string, proto int, err error) {

@@ -204,7 +204,7 @@ func DialTCP(network string, laddr, raddr *TCPAddr) (*TCPConn, error) {
 // SyscallConn returns a raw network connection.
 // This implements the [syscall.Conn] interface.
 func (c *TCPConn) SyscallConn() (syscall.RawConn, error) {
-	return nil, errors.New("SyscallConn not implemented")
+	return newRawConn(c.fd)
 }
 
 func (c *TCPConn) Read(b []byte) (int, error) {
@@ -397,19 +397,34 @@ func (l *listener) Addr() Addr {
 }
 
 func listenTCP(laddr *TCPAddr) (Listener, error) {
+	return listenTCPControl(laddr, nil)
+}
+
+// listenTCPControl runs ctrl on the new socket before it is bound, as
+// ListenConfig.Control does in Go.
+func listenTCPControl(laddr *TCPAddr, ctrl func(fd int) error) (Listener, error) {
 	fd, err := netdev.Socket(socketFamily(laddr.IP), _SOCK_STREAM, _IPPROTO_TCP)
 	if err != nil {
 		return nil, err
 	}
 
+	if ctrl != nil {
+		if err := ctrl(fd); err != nil {
+			netdev.Close(fd)
+			return nil, err
+		}
+	}
+
 	laddrport := laddr.AddrPort()
 	err = netdev.Bind(fd, laddrport)
 	if err != nil {
+		netdev.Close(fd)
 		return nil, err
 	}
 
 	err = netdev.Listen(fd, 5)
 	if err != nil {
+		netdev.Close(fd)
 		return nil, err
 	}
 
@@ -499,7 +514,7 @@ func (l *TCPListener) SetDeadline(t time.Time) error {
 //
 // TINYGO: mirrors the TCPConn stub. wazero's socket layer requires it.
 func (l *TCPListener) SyscallConn() (syscall.RawConn, error) {
-	return nil, errors.New("SyscallConn not implemented")
+	return newRawConn(l.fd)
 }
 
 // SetKeepAliveConfig configures the keep-alive probes the operating system

@@ -223,6 +223,12 @@ func DialUDP(network string, laddr, raddr *UDPAddr) (*UDPConn, error) {
 // If the Port field of laddr is 0, a port number is automatically
 // chosen.
 func ListenUDP(network string, laddr *UDPAddr) (*UDPConn, error) {
+	return listenUDPControl(network, laddr, nil)
+}
+
+// listenUDPControl runs ctrl on the new socket before it is bound, as
+// ListenConfig.Control does in Go.
+func listenUDPControl(network string, laddr *UDPAddr, ctrl func(fd int) error) (*UDPConn, error) {
 	switch network {
 	case "udp", "udp4":
 	default:
@@ -245,6 +251,13 @@ func ListenUDP(network string, laddr *UDPAddr) (*UDPConn, error) {
 		return nil, err
 	}
 
+	if ctrl != nil {
+		if err := ctrl(fd); err != nil {
+			netdev.Close(fd)
+			return nil, err
+		}
+	}
+
 	lip, _ := netip.AddrFromSlice(laddr.IP)
 	laddrport := netip.AddrPortFrom(lip, uint16(laddr.Port))
 
@@ -263,7 +276,7 @@ func ListenUDP(network string, laddr *UDPAddr) (*UDPConn, error) {
 // SyscallConn returns a raw network connection.
 // This implements the syscall.Conn interface.
 func (c *UDPConn) SyscallConn() (syscall.RawConn, error) {
-	return nil, errors.New("SyscallConn not implemented")
+	return newRawConn(c.fd)
 }
 
 // TINYGO: Use netdev for Conn methods: Read = Recv, Write = Send, etc.

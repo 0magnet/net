@@ -167,9 +167,11 @@ func DialUDP(network string, laddr, raddr *UDPAddr) (*UDPConn, error) {
 
 	// TINYGO: Use netdev to create UDP socket and connect
 
-	if laddr == nil {
-		laddr = &UDPAddr{}
+	la := UDPAddr{}
+	if laddr != nil {
+		la = *laddr
 	}
+	laddr = &la
 
 	if raddr == nil {
 		raddr = &UDPAddr{}
@@ -181,8 +183,10 @@ func DialUDP(network string, laddr, raddr *UDPAddr) (*UDPConn, error) {
 		return nil, fmt.Errorf("invalid IP address")
 	}
 
-	// If no port was given, grab an ephemeral port
-	if laddr.Port == 0 {
+	namer, kernelPicks := netdev.(interface {
+		GetSockname(sockfd int) (netip.AddrPort, error)
+	})
+	if laddr.Port == 0 && !kernelPicks {
 		laddr.Port = ephemeralPort()
 	}
 
@@ -206,6 +210,11 @@ func DialUDP(network string, laddr, raddr *UDPAddr) (*UDPConn, error) {
 	if err = netdev.Connect(fd, "", raddrport); err != nil {
 		netdev.Close(fd)
 		return nil, err
+	}
+	if laddr.Port == 0 && kernelPicks {
+		if ap, err := namer.GetSockname(fd); err == nil {
+			laddr.Port = int(ap.Port())
+		}
 	}
 
 	return &UDPConn{
@@ -240,13 +249,18 @@ func listenUDPControl(network string, laddr *UDPAddr, ctrl func(fd int) error) (
 
 	// TINYGO: Use netdev to create UDP socket and bind (no connect)
 
-	if laddr == nil {
-		laddr = &UDPAddr{}
+	la := UDPAddr{}
+	if laddr != nil {
+		la = *laddr
 	}
 
-	// If no port was given, grab an ephemeral port
-	if laddr.Port == 0 {
-		laddr.Port = ephemeralPort()
+	// A netdev that reports socket names lets the kernel pick a free port, as
+	// the host does; the rest get one from a counter.
+	namer, kernelPicks := netdev.(interface {
+		GetSockname(sockfd int) (netip.AddrPort, error)
+	})
+	if la.Port == 0 && !kernelPicks {
+		la.Port = ephemeralPort()
 	}
 
 	fd, err := netdev.Socket(_AF_INET, _SOCK_DGRAM, _IPPROTO_UDP)
@@ -261,18 +275,24 @@ func listenUDPControl(network string, laddr *UDPAddr, ctrl func(fd int) error) (
 		}
 	}
 
-	lip, _ := netip.AddrFromSlice(laddr.IP)
-	laddrport := netip.AddrPortFrom(lip, uint16(laddr.Port))
+	lip, _ := netip.AddrFromSlice(la.IP)
+	laddrport := netip.AddrPortFrom(lip, uint16(la.Port))
 
 	if err = netdev.Bind(fd, laddrport); err != nil {
 		netdev.Close(fd)
 		return nil, err
 	}
 
+	if la.Port == 0 && kernelPicks {
+		if ap, err := namer.GetSockname(fd); err == nil {
+			la.Port = int(ap.Port())
+		}
+	}
+
 	return &UDPConn{
 		fd:    fd,
 		net:   network,
-		laddr: laddr,
+		laddr: &la,
 	}, nil
 }
 

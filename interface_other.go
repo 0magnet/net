@@ -4,7 +4,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !(js || wasip1)
+//go:build !(js || wasip1) && !(linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm)
 
 package net
 

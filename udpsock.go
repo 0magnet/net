@@ -476,3 +476,21 @@ func (c *UDPConn) SetWriteDeadline(t time.Time) error {
 	pollInterrupt(c.fd, true)
 	return nil
 }
+
+// ReadMsgUDPAddrPort is like ReadMsgUDP but returns a netip.AddrPort.
+func (c *UDPConn) ReadMsgUDPAddrPort(b, oob []byte) (n, oobn, flags int, addr netip.AddrPort, err error) {
+	n, oobn, flags, ua, err := c.ReadMsgUDP(b, oob)
+	if ua != nil {
+		addr = ua.AddrPort()
+	}
+	return n, oobn, flags, addr, err
+}
+
+// WriteMsgUDPAddrPort is like WriteMsgUDP but takes a netip.AddrPort.
+func (c *UDPConn) WriteMsgUDPAddrPort(b, oob []byte, addr netip.AddrPort) (n, oobn int, err error) {
+	var ua *UDPAddr
+	if addr.IsValid() {
+		ua = UDPAddrFromAddrPort(addr)
+	}
+	return c.WriteMsgUDP(b, oob, ua)
+}

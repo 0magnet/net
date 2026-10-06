@@ -6,10 +6,7 @@
 
 package net
 
-import (
-	"errors"
-	"time"
-)
+import "time"
 
 // BUG(mikio): On JS, WASIP1 and Plan 9, methods and functions related
 // to UnixConn and UnixListener are not implemented.
@@ -17,7 +14,7 @@ import (
 // BUG(mikio): On Windows, methods and functions related to UnixConn
 // and UnixListener don't work for "unixgram" and "unixpacket".
 
-// BUG(paralin): On TinyGo, Unix sockets are not implemented.
+// BUG(paralin): On TinyGo, Unix sockets are implemented on the host target only.
 
 // UnixAddr represents the address of a Unix domain socket end point.
 type UnixAddr struct {
@@ -49,33 +46,6 @@ func (a *UnixAddr) opAddr() Addr {
 	return a
 }
 
-// UnixConn is an implementation of the Conn interface for connections to Unix
-// domain sockets.
-//
-// TINYGO: Unix sockets are not implemented (the browser has no filesystem
-// sockets). This type exists only to satisfy references and type assertions
-// such as those in github.com/gliderlabs/ssh agent forwarding; all methods
-// return an error. The corresponding code paths are never reached at runtime in
-// the wasm build.
-type UnixConn struct {
-	fd    int
-	laddr *UnixAddr
-	raddr *UnixAddr
-}
-
-var errUnixNotImplemented = errors.New("net: Unix sockets not implemented")
-
-func (c *UnixConn) Read(b []byte) (int, error)         { return 0, errUnixNotImplemented }
-func (c *UnixConn) Write(b []byte) (int, error)        { return 0, errUnixNotImplemented }
-func (c *UnixConn) Close() error                       { return errUnixNotImplemented }
-func (c *UnixConn) CloseRead() error                   { return errUnixNotImplemented }
-func (c *UnixConn) CloseWrite() error                  { return errUnixNotImplemented }
-func (c *UnixConn) LocalAddr() Addr                    { return c.laddr }
-func (c *UnixConn) RemoteAddr() Addr                   { return c.raddr }
-func (c *UnixConn) SetDeadline(t time.Time) error      { return errUnixNotImplemented }
-func (c *UnixConn) SetReadDeadline(t time.Time) error  { return errUnixNotImplemented }
-func (c *UnixConn) SetWriteDeadline(t time.Time) error { return errUnixNotImplemented }
-
 // ResolveUnixAddr returns an address of Unix domain socket end point.
 //
 // The network must be a Unix network name.
@@ -90,3 +60,39 @@ func ResolveUnixAddr(network, address string) (*UnixAddr, error) {
 		return nil, UnknownNetworkError(network)
 	}
 }
+
+// UnixConn is an implementation of the Conn interface for connections to Unix
+// domain sockets. On the host target it is backed by a real socket; elsewhere
+// every method returns an error (unixsock_stub.go).
+type UnixConn struct {
+	closer        closeGuard
+	fd            int
+	laddr         *UnixAddr
+	raddr         *UnixAddr
+	readDeadline  time.Time
+	writeDeadline time.Time
+}
+
+// UnixListener is a Unix domain socket listener.
+type UnixListener struct {
+	closer closeGuard
+	fd     int
+	laddr  *UnixAddr
+	path   string
+	unlink bool
+}
+
+func (c *UnixConn) LocalAddr() Addr  { return c.laddr }
+func (c *UnixConn) RemoteAddr() Addr { return c.raddr }
+
+// Addr returns the listener's network address.
+func (l *UnixListener) Addr() Addr { return l.laddr }
+
+// SetDeadline sets the deadline associated with the listener.
+//
+// TINYGO: no-op, Accept has no deadline support.
+func (l *UnixListener) SetDeadline(t time.Time) error { return nil }
+
+// SetUnlinkOnClose sets whether the underlying socket file should be removed
+// from the file system when the listener is closed.
+func (l *UnixListener) SetUnlinkOnClose(unlink bool) { l.unlink = unlink }

@@ -501,3 +501,29 @@ func (l *TCPListener) SetDeadline(t time.Time) error {
 func (l *TCPListener) SyscallConn() (syscall.RawConn, error) {
 	return nil, errors.New("SyscallConn not implemented")
 }
+
+// SetKeepAliveConfig configures the keep-alive probes the operating system
+// sends on the connection. Idle and Interval are passed in whole seconds, as
+// Linux takes them; zero leaves the system default in place.
+func (c *TCPConn) SetKeepAliveConfig(config KeepAliveConfig) error {
+	if err := c.SetKeepAlive(config.Enable); err != nil {
+		return err
+	}
+	if !config.Enable {
+		return nil
+	}
+	if config.Idle > 0 {
+		if err := netdev.SetSockOpt(c.fd, _SOL_TCP, _TCP_KEEPIDLE, int(config.Idle/time.Second)); err != nil {
+			return err
+		}
+	}
+	if config.Interval > 0 {
+		if err := netdev.SetSockOpt(c.fd, _SOL_TCP, _TCP_KEEPINTVL, int(config.Interval/time.Second)); err != nil {
+			return err
+		}
+	}
+	if config.Count > 0 {
+		return netdev.SetSockOpt(c.fd, _SOL_TCP, _TCP_KEEPCNT, config.Count)
+	}
+	return nil
+}

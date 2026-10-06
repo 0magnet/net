@@ -7,7 +7,6 @@
 package net
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -316,17 +315,20 @@ func (c *UDPConn) Write(b []byte) (int, error) {
 // TINYGO: netdev has no per-datagram source address, so the connected
 // remote address (c.raddr) is returned as the source.
 func (c *UDPConn) ReadFromUDP(b []byte) (int, *UDPAddr, error) {
-	n, err := netdev.Recv(c.fd, b, 0, c.readDeadline)
+	n, from, err := udpRecvFrom(c.fd, b, c.readDeadline)
 	for err == errPollInterrupted {
-		n, err = netdev.Recv(c.fd, b, 0, c.readDeadline)
+		n, from, err = udpRecvFrom(c.fd, b, c.readDeadline)
 	}
 	if n < 0 {
 		n = 0
 	}
-	if err != nil && err != io.EOF {
-		err = &OpError{Op: "read", Net: c.net, Source: c.laddr, Addr: c.raddr, Err: err}
+	if err != nil {
+		return n, nil, &OpError{Op: "read", Net: c.net, Source: c.laddr, Addr: c.raddr.opAddr(), Err: err}
 	}
-	return n, c.raddr, err
+	if !from.IsValid() {
+		return n, c.raddr, nil
+	}
+	return n, UDPAddrFromAddrPort(from), nil
 }
 
 // ReadFromUDPAddrPort acts like [UDPConn.ReadFromUDP] but returns a [netip.AddrPort].
@@ -343,17 +345,18 @@ func (c *UDPConn) ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err
 // TINYGO: the socket is connected via netdev, so writes go to the
 // connected remote regardless of addr, mirroring netdev.Send.
 func (c *UDPConn) WriteToUDP(b []byte, addr *UDPAddr) (int, error) {
-	n, err := netdev.Send(c.fd, b, 0, c.writeDeadline)
-	for err == errPollInterrupted {
-		n, err = netdev.Send(c.fd, b, 0, c.writeDeadline)
+	if addr == nil {
+		return c.Write(b)
 	}
-	if n < 0 {
-		n = 0
+	to := addr.AddrPort()
+	n, err := udpSendTo(c.fd, b, to, c.writeDeadline)
+	for err == errPollInterrupted {
+		n, err = udpSendTo(c.fd, b, to, c.writeDeadline)
 	}
 	if err != nil {
-		err = &OpError{Op: "write", Net: c.net, Source: c.laddr, Addr: addr.opAddr(), Err: err}
+		return n, &OpError{Op: "write", Net: c.net, Source: c.laddr, Addr: addr.opAddr(), Err: err}
 	}
-	return n, err
+	return n, nil
 }
 
 // WriteToUDPAddrPort acts like [UDPConn.WriteToUDP] but takes a [netip.AddrPort].
@@ -379,7 +382,11 @@ func (c *UDPConn) SetWriteBuffer(bytes int) error {
 
 // ReadFrom implements the PacketConn ReadFrom method.
 func (c *UDPConn) ReadFrom(b []byte) (int, Addr, error) {
-	return 0, nil, errors.New("ReadFrom not implemented")
+	n, addr, err := c.ReadFromUDP(b)
+	if addr == nil {
+		return n, nil, err
+	}
+	return n, addr, err
 }
 
 // ReadMsgUDP reads a message from c, copying the payload into b and
@@ -390,13 +397,29 @@ func (c *UDPConn) ReadFrom(b []byte) (int, Addr, error) {
 // The packages golang.org/x/net/ipv4 and golang.org/x/net/ipv6 can be
 // used to manipulate IP-level socket options in oob.
 func (c *UDPConn) ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *UDPAddr, err error) {
-	err = errors.New("ReadMsgUDP not implemented")
-	return
+	var from netip.AddrPort
+	n, oobn, flags, from, err = udpRecvMsg(c.fd, b, oob, c.readDeadline)
+	for err == errPollInterrupted {
+		n, oobn, flags, from, err = udpRecvMsg(c.fd, b, oob, c.readDeadline)
+	}
+	if err != nil {
+		return 0, 0, 0, nil, &OpError{Op: "read", Net: c.net, Source: c.laddr, Addr: c.raddr.opAddr(), Err: err}
+	}
+	if from.IsValid() {
+		addr = UDPAddrFromAddrPort(from)
+	} else {
+		addr = c.raddr
+	}
+	return n, oobn, flags, addr, nil
 }
 
 // WriteTo implements the PacketConn WriteTo method.
 func (c *UDPConn) WriteTo(b []byte, addr Addr) (int, error) {
-	return 0, errors.New("WriteTo not implemented")
+	ua, ok := addr.(*UDPAddr)
+	if !ok {
+		return 0, &OpError{Op: "write", Net: c.net, Source: c.laddr, Addr: addr, Err: syscall.EINVAL}
+	}
+	return c.WriteToUDP(b, ua)
 }
 
 // WriteMsgUDP writes a message to addr via c if c isn't connected, or
@@ -408,7 +431,18 @@ func (c *UDPConn) WriteTo(b []byte, addr Addr) (int, error) {
 // The packages [golang.org/x/net/ipv4] and [golang.org/x/net/ipv6] can be
 // used to manipulate IP-level socket options in oob.
 func (c *UDPConn) WriteMsgUDP(b, oob []byte, addr *UDPAddr) (n, oobn int, err error) {
-	return 0, 0, errors.New("WriteMsgUDP not implemented")
+	var to netip.AddrPort
+	if addr != nil {
+		to = addr.AddrPort()
+	}
+	n, oobn, err = udpSendMsg(c.fd, b, oob, to, c.writeDeadline)
+	for err == errPollInterrupted {
+		n, oobn, err = udpSendMsg(c.fd, b, oob, to, c.writeDeadline)
+	}
+	if err != nil {
+		return 0, 0, &OpError{Op: "write", Net: c.net, Source: c.laddr, Addr: addr.opAddr(), Err: err}
+	}
+	return n, oobn, nil
 }
 
 func (c *UDPConn) Close() error {

@@ -243,4 +243,4 @@ func (c *UnixConn) WriteMsgUnix(b, oob []byte, addr *UnixAddr) (n, oobn int, err
 // File returns a copy of the underlying os.File.
 //
 // TINYGO: not implemented, as for the other socket types (file.go).
-func (c *UnixConn) File() (*os.File, error) { return nil, errFileNotImplemented }
+func (c *UnixConn) File() (*os.File, error) { return dupFile(c.fd, "unix") }

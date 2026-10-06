@@ -1,3 +1,5 @@
+//go:build !(linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm)
+
 package net
 
 import (

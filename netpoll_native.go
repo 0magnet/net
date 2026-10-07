@@ -71,22 +71,20 @@ func (pd *pollDesc) events() uint32 {
 func (p *netPoller) arm(pd *pollDesc) {
 	ev := pd.events()
 	if ev == 0 {
-		if pd.inEpoll {
-			syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, pd.fd, nil)
-			pd.inEpoll = false
-		}
-		if !pd.readInterrupt && !pd.writeInterrupt {
-			delete(p.fds, pd.fd)
-		}
+		// Keep pd and the registration for the next wait. EPOLLONESHOT means an
+		// unwanted event fires at most once.
 		return
 	}
 	event := &syscall.EpollEvent{Events: ev, Fd: int32(pd.fd)}
 	if pd.inEpoll {
-		syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, pd.fd, event)
-	} else {
-		if err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, pd.fd, event); err == nil {
-			pd.inEpoll = true
+		// ENOENT means the fd was closed without close() and its number reused.
+		if syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, pd.fd, event) != syscall.ENOENT {
+			return
 		}
+		pd.inEpoll = false
+	}
+	if err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, pd.fd, event); err == nil {
+		pd.inEpoll = true
 	}
 }
 

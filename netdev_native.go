@@ -16,10 +16,13 @@
 package net
 
 import (
+	"bufio"
+	"bytes"
 	"io"
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -376,45 +379,125 @@ func hostLookup(name string) (netip.Addr, error) {
 	return dnsLookup(name)
 }
 
-// lookupStaticHost scans /etc/hosts for an address matching name, preferring an
-// IPv4 match but falling back to IPv6.
+// hostsCacheMax bounds the remembered /etc/hosts answers.
+const hostsCacheMax = 1024
+
+// hostsCache keeps /etc/hosts answers until the file changes. Ad-block hosts
+// files run to several megabytes, too much to read on every lookup.
+var hostsCache struct {
+	sync.Mutex
+	checked time.Time
+	mtime   time.Time
+	size    int64
+	names   map[string]netip.Addr // an invalid Addr records a miss
+}
+
+// lookupStaticHost returns the /etc/hosts address for name, preferring an IPv4
+// match but falling back to IPv6.
 func lookupStaticHost(name string) (netip.Addr, bool) {
-	data, err := os.ReadFile("/etc/hosts")
+	key := strings.ToLower(name)
+	c := &hostsCache
+	c.Lock()
+	defer c.Unlock()
+	if now := time.Now(); c.names == nil || now.Sub(c.checked) > 5*time.Second {
+		c.checked = now
+		fi, err := os.Stat("/etc/hosts")
+		if err != nil {
+			c.names = nil
+			return netip.Addr{}, false
+		}
+		if c.names == nil || !fi.ModTime().Equal(c.mtime) || fi.Size() != c.size {
+			c.mtime, c.size = fi.ModTime(), fi.Size()
+			c.names = make(map[string]netip.Addr)
+		}
+	}
+	if addr, ok := c.names[key]; ok {
+		return addr, addr.IsValid()
+	}
+	addr, ok := scanStaticHost(key)
+	if len(c.names) >= hostsCacheMax {
+		clear(c.names)
+	}
+	c.names[key] = addr
+	return addr, ok
+}
+
+// scanStaticHost reads /etc/hosts a line at a time, allocating only for a match.
+func scanStaticHost(name string) (netip.Addr, bool) {
+	f, err := os.Open("/etc/hosts")
 	if err != nil {
 		return netip.Addr{}, false
 	}
+	defer f.Close()
 	var v6 netip.Addr
 	var haveV6 bool
-	for _, line := range strings.Split(string(data), "\n") {
-		if i := strings.IndexByte(line, '#'); i >= 0 {
+	nb := []byte(name)
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		line := s.Bytes()
+		if i := bytes.IndexByte(line, '#'); i >= 0 {
 			line = line[:i]
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		ip, rest := nextField(line)
+		if len(ip) == 0 {
 			continue
 		}
-		addr, err := netip.ParseAddr(fields[0])
-		if err != nil {
-			continue
-		}
-		addr = addr.Unmap()
-		for _, h := range fields[1:] {
-			if strings.EqualFold(h, name) {
-				if addr.Is4() {
-					return addr, true
-				}
-				if !haveV6 {
-					v6, haveV6 = addr, true
-				}
+		for {
+			var h []byte
+			h, rest = nextField(rest)
+			if len(h) == 0 {
+				break
+			}
+			if !bytes.EqualFold(h, nb) {
+				continue
+			}
+			addr, err := netip.ParseAddr(string(ip))
+			if err != nil {
+				break
+			}
+			addr = addr.Unmap()
+			if addr.Is4() {
+				return addr, true
+			}
+			if !haveV6 {
+				v6, haveV6 = addr, true
 			}
 		}
 	}
 	return v6, haveV6
 }
 
-// resolvConfServers returns the nameservers from /etc/resolv.conf as
-// "ip:53" strings, defaulting to localhost if the file is missing/empty.
+// nextField returns the first space or tab separated field of b and the rest.
+func nextField(b []byte) (field, rest []byte) {
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r') {
+		i++
+	}
+	j := i
+	for j < len(b) && b[j] != ' ' && b[j] != '\t' && b[j] != '\r' {
+		j++
+	}
+	return b[i:j], b[j:]
+}
+
+// resolvConf keeps the nameserver list for five seconds between reads.
+var resolvConf struct {
+	sync.Mutex
+	checked time.Time
+	servers []string
+}
+
+// resolvConfServers returns the nameservers from /etc/resolv.conf as IP
+// strings, defaulting to localhost if the file is missing or empty.
 func resolvConfServers() []string {
+	c := &resolvConf
+	c.Lock()
+	defer c.Unlock()
+	now := time.Now()
+	if c.servers != nil && now.Sub(c.checked) <= 5*time.Second {
+		return c.servers
+	}
+	c.checked = now
 	var servers []string
 	if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -432,6 +515,7 @@ func resolvConfServers() []string {
 	if len(servers) == 0 {
 		servers = []string{"127.0.0.1"}
 	}
+	c.servers = servers
 	return servers
 }
 

@@ -27,6 +27,11 @@ type pollDesc struct {
 	readInterrupt  bool
 	writeInterrupt bool
 
+	// The latest deadline per direction, set by interrupt. It wins over the
+	// caller's copy, which may predate a concurrent deadline change.
+	deadline    [2]time.Time
+	hasDeadline [2]bool
+
 	// One reusable channel and timer per direction, so the common case of a
 	// single waiter allocates nothing. Index 1 is the write direction.
 	cache [2]pollWaiter
@@ -116,6 +121,9 @@ func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 	if pd == nil {
 		pd = &pollDesc{fd: fd}
 		p.fds[fd] = pd
+	}
+	if pd.hasDeadline[dir] {
+		deadline = pd.deadline[dir]
 	}
 	if (write && pd.writeInterrupt) || (!write && pd.readInterrupt) {
 		// An interrupt arrived before we parked. Consume it and let the caller
@@ -224,22 +232,23 @@ func (p *netPoller) cancelWaiter(fd int, write bool, ch chan error) {
 
 // interrupt wakes every goroutine parked on fd in the given direction so it
 // re-evaluates its deadline. net/http's abortPendingRead relies on this.
-func (p *netPoller) interrupt(fd int, write bool) {
+func (p *netPoller) interrupt(fd int, write bool, deadline time.Time) {
+	p.init()
 	if p.err != nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.fds == nil {
-		// The poller never started, so nothing can be parked. Any later
-		// wait() captures the new deadline anyway.
-		return
-	}
 	pd := p.fds[fd]
 	if pd == nil {
 		pd = &pollDesc{fd: fd}
 		p.fds[fd] = pd
 	}
+	dir := 0
+	if write {
+		dir = 1
+	}
+	pd.deadline[dir], pd.hasDeadline[dir] = deadline, true
 	if write {
 		if len(pd.writers) == 0 {
 			pd.writeInterrupt = true

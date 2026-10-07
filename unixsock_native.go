@@ -168,20 +168,20 @@ func (c *UnixConn) CloseWrite() error { return syscall.Shutdown(c.fd, syscall.SH
 func (c *UnixConn) SetDeadline(t time.Time) error {
 	c.readDeadline = t
 	c.writeDeadline = t
-	pollInterrupt(c.fd, false)
-	pollInterrupt(c.fd, true)
+	pollInterrupt(c.fd, false, t)
+	pollInterrupt(c.fd, true, t)
 	return nil
 }
 
 func (c *UnixConn) SetReadDeadline(t time.Time) error {
 	c.readDeadline = t
-	pollInterrupt(c.fd, false)
+	pollInterrupt(c.fd, false, t)
 	return nil
 }
 
 func (c *UnixConn) SetWriteDeadline(t time.Time) error {
 	c.writeDeadline = t
-	pollInterrupt(c.fd, true)
+	pollInterrupt(c.fd, true, t)
 	return nil
 }
 

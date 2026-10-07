@@ -151,10 +151,10 @@ func (n *hostNetdev) Connect(sockfd int, host string, ip netip.AddrPort) error {
 	}
 }
 
-// PollInterrupt wakes any goroutine parked in Recv or Send on sockfd so it
-// re-evaluates its deadline.
-func (*hostNetdev) PollInterrupt(sockfd int, write bool) {
-	poller.interrupt(sockfd, write)
+// PollDeadline records the new deadline of sockfd and wakes any goroutine
+// parked in Recv or Send on it so it re-evaluates its deadline.
+func (*hostNetdev) PollDeadline(sockfd int, write bool, deadline time.Time) {
+	poller.interrupt(sockfd, write, deadline)
 }
 
 func (*hostNetdev) Listen(sockfd int, backlog int) error {

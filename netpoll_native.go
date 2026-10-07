@@ -26,6 +26,16 @@ type pollDesc struct {
 	// wait in that direction returns at once instead of using a stale deadline.
 	readInterrupt  bool
 	writeInterrupt bool
+
+	// One reusable channel and timer per direction, so the common case of a
+	// single waiter allocates nothing. Index 1 is the write direction.
+	cache [2]pollWaiter
+}
+
+type pollWaiter struct {
+	busy bool
+	ch   chan error
+	t    *time.Timer
 }
 
 type netPoller struct {
@@ -35,6 +45,7 @@ type netPoller struct {
 
 	mu  sync.Mutex
 	fds map[int]*pollDesc
+	ev  syscall.EpollEvent // scratch for arm, guarded by mu
 }
 
 var poller netPoller
@@ -75,15 +86,15 @@ func (p *netPoller) arm(pd *pollDesc) {
 		// unwanted event fires at most once.
 		return
 	}
-	event := &syscall.EpollEvent{Events: ev, Fd: int32(pd.fd)}
+	p.ev = syscall.EpollEvent{Events: ev, Fd: int32(pd.fd)}
 	if pd.inEpoll {
 		// ENOENT means the fd was closed without close() and its number reused.
-		if syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, pd.fd, event) != syscall.ENOENT {
+		if syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, pd.fd, &p.ev) != syscall.ENOENT {
 			return
 		}
 		pd.inEpoll = false
 	}
-	if err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, pd.fd, event); err == nil {
+	if err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, pd.fd, &p.ev); err == nil {
 		pd.inEpoll = true
 	}
 }
@@ -95,8 +106,10 @@ func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 	if p.err != nil {
 		return p.err
 	}
-
-	ch := make(chan error, 1)
+	dir := 0
+	if write {
+		dir = 1
+	}
 
 	p.mu.Lock()
 	pd := p.fds[fd]
@@ -116,6 +129,24 @@ func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 		p.mu.Unlock()
 		return errPollInterrupted
 	}
+	// Every send to a waiter channel happens under p.mu while it is listed,
+	// so draining here clears a value left by a waiter that timed out.
+	var w *pollWaiter
+	var ch chan error
+	if c := &pd.cache[dir]; !c.busy {
+		w = c
+		w.busy = true
+		if w.ch == nil {
+			w.ch = make(chan error, 1)
+		}
+		select {
+		case <-w.ch:
+		default:
+		}
+		ch = w.ch
+	} else {
+		ch = make(chan error, 1)
+	}
 	if write {
 		pd.writers = append(pd.writers, ch)
 	} else {
@@ -124,24 +155,53 @@ func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 	p.arm(pd)
 	p.mu.Unlock()
 
-	var timeout <-chan time.Time
-	if !deadline.IsZero() {
-		d := time.Until(deadline)
-		if d <= 0 {
+	err := p.park(fd, write, deadline, ch, w)
+	if w != nil {
+		p.mu.Lock()
+		w.busy = false
+		p.mu.Unlock()
+	}
+	return err
+}
+
+func (p *netPoller) park(fd int, write bool, deadline time.Time, ch chan error, w *pollWaiter) error {
+	if deadline.IsZero() {
+		return <-ch
+	}
+	d := time.Until(deadline)
+	if d <= 0 {
+		p.cancelWaiter(fd, write, ch)
+		return timeoutError{}
+	}
+	var t *time.Timer
+	if w == nil {
+		t = time.NewTimer(d)
+	} else if w.t == nil {
+		w.t = time.NewTimer(d)
+		t = w.t
+	} else {
+		t = w.t
+		t.Reset(d)
+	}
+	for {
+		select {
+		case err := <-ch:
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+			return err
+		case <-t.C:
+			// A reused timer can deliver a fire left over from an earlier wait.
+			if d := time.Until(deadline); d > 0 {
+				t.Reset(d)
+				continue
+			}
 			p.cancelWaiter(fd, write, ch)
 			return timeoutError{}
 		}
-		t := time.NewTimer(d)
-		defer t.Stop()
-		timeout = t.C
-	}
-
-	select {
-	case err := <-ch:
-		return err
-	case <-timeout:
-		p.cancelWaiter(fd, write, ch)
-		return timeoutError{}
 	}
 }
 
@@ -169,10 +229,10 @@ func (p *netPoller) interrupt(fd int, write bool) {
 		return
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.fds == nil {
 		// The poller never started, so nothing can be parked. Any later
 		// wait() captures the new deadline anyway.
-		p.mu.Unlock()
 		return
 	}
 	pd := p.fds[fd]
@@ -180,24 +240,18 @@ func (p *netPoller) interrupt(fd int, write bool) {
 		pd = &pollDesc{fd: fd}
 		p.fds[fd] = pd
 	}
-	var chs []chan error
 	if write {
-		chs, pd.writers = pd.writers, nil
-		if len(chs) == 0 {
+		if len(pd.writers) == 0 {
 			pd.writeInterrupt = true
 		}
+		pd.writers = wake(pd.writers, errPollInterrupted)
 	} else {
-		chs, pd.readers = pd.readers, nil
-		if len(chs) == 0 {
+		if len(pd.readers) == 0 {
 			pd.readInterrupt = true
 		}
+		pd.readers = wake(pd.readers, errPollInterrupted)
 	}
 	p.arm(pd)
-	p.mu.Unlock()
-
-	for _, ch := range chs {
-		ch <- errPollInterrupted
-	}
 }
 
 // close wakes every goroutine parked on fd with errPollClosed and stops polling
@@ -207,25 +261,17 @@ func (p *netPoller) close(fd int) {
 		return
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	pd := p.fds[fd]
 	if pd == nil {
-		p.mu.Unlock()
 		return
 	}
 	if pd.inEpoll {
 		syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
 	}
 	delete(p.fds, fd)
-	readers, writers := pd.readers, pd.writers
-	pd.readers, pd.writers = nil, nil
-	p.mu.Unlock()
-
-	for _, ch := range readers {
-		ch <- errPollClosed
-	}
-	for _, ch := range writers {
-		ch <- errPollClosed
-	}
+	pd.readers = wake(pd.readers, errPollClosed)
+	pd.writers = wake(pd.writers, errPollClosed)
 }
 
 // loop is the poller's background goroutine. It waits for epoll events
@@ -250,16 +296,10 @@ func (p *netPoller) loop() {
 			// On error/hangup, wake everyone so they observe the real result.
 			hup := e.Events&(syscall.EPOLLERR|syscall.EPOLLHUP|syscall.EPOLLRDHUP) != 0
 			if hup || e.Events&syscall.EPOLLIN != 0 {
-				for _, ch := range pd.readers {
-					ch <- nil
-				}
-				pd.readers = nil
+				pd.readers = wake(pd.readers, nil)
 			}
 			if hup || e.Events&syscall.EPOLLOUT != 0 {
-				for _, ch := range pd.writers {
-					ch <- nil
-				}
-				pd.writers = nil
+				pd.writers = wake(pd.writers, nil)
 			}
 			// EPOLLONESHOT disabled the fd, so re-arm for any remaining waiters.
 			pd.inEpoll = true // it is still registered, just disarmed
@@ -269,10 +309,22 @@ func (p *netPoller) loop() {
 	}
 }
 
+// wake sends err to every waiter in s and returns s emptied, keeping its
+// backing array. Must be called with p.mu held.
+func wake(s []chan error, err error) []chan error {
+	for i, ch := range s {
+		ch <- err
+		s[i] = nil
+	}
+	return s[:0]
+}
+
 func removeChan(s []chan error, ch chan error) []chan error {
 	for i, c := range s {
 		if c == ch {
-			return append(s[:i], s[i+1:]...)
+			n := copy(s[i:], s[i+1:])
+			s[i+n] = nil
+			return s[:i+n]
 		}
 	}
 	return s

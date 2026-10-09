@@ -67,12 +67,9 @@ func (t *Transport) RoundTrip(req *Request) (*Response, error) {
 	// the contract and dial using the regular round-trip instead. Otherwise, we'll try
 	// to fall back on the Fetch API, unless it's not available.
 
-	// TINYGO: Dial/DialTLS & DialContext/DialTLSContext are not present in tinygo Transport struct, therefore the
-	// corresponding if statements were removed.
-	// TINYGO: t.roundTrip (the private fallback used by upstream Go) is not present in the TinyGo stub
-	// Transport, so return an error when the Fetch API is unavailable instead of calling it.
-	if jsFetchMissing || jsFetchDisabled {
-		return nil, errors.New("net/http: Fetch API is not available and no fallback transport is implemented for js/wasm")
+	// TINYGO: the Transport has no DialTLS or DialTLSContext fields.
+	if t.Dial != nil || t.DialContext != nil || jsFetchMissing || jsFetchDisabled {
+		return t.roundTrip(req)
 	}
 
 	ac := js.Global().Get("AbortController")

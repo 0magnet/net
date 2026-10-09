@@ -13,12 +13,11 @@ package http
 
 import (
 	"bufio"
-	"crypto/tls"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http/internal/ascii"
 	"net/url"
 	"strings"
@@ -237,7 +236,7 @@ func send(req *Request, rt RoundTripper, deadline time.Time) (resp *Response, di
 	return resp, nil, nil
 }
 
-func roundTrip(req *Request) (*Response, error) {
+func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
 	// TINYGO: This is an approximation of Transport.roudTrip()
 
@@ -282,49 +281,50 @@ func roundTrip(req *Request) (*Response, error) {
 		return nil, errors.New("http: no Host in request URL")
 	}
 
-	// TINYGO: From here on just brute force dial a connection,
-	// TINYGO: send the request, read and return the response.
-	// TINYGO: The connection is closed when resp body is closed.
+	// TINYGO: dial one connection for this request, send it, and return the
+	// response. The connection is closed when the response body hits EOF.
 
-	var conn net.Conn
-	var err error
-
-	host := req.Host
-	missingPort := !strings.Contains(host, ":")
-
-	switch scheme {
-	case "http":
-		if missingPort {
-			host = host + ":80"
-		}
-		conn, err = net.Dial("tcp", host)
-	case "https":
-		if missingPort {
-			host = host + ":443"
-		}
-		conn, err = tls.Dial("tcp", host, nil)
-	}
+	conn, usingProxy, proxyAuth, err := t.connect(req)
 	if err != nil {
 		req.closeBody()
 		return nil, err
 	}
+	ctx := req.Context()
+	if dl, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(dl)
+	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
 
-	// TINYGO: TODO handle timeouts
-
+	var extra Header
+	if proxyAuth != "" {
+		extra = Header{"Proxy-Authorization": {proxyAuth}}
+	}
 	writer := bufio.NewWriter(conn)
-	if err = req.Write(writer); err != nil {
+	if err = req.write(writer, usingProxy, extra, nil); err != nil {
+		stop()
+		conn.Close()
 		req.closeBody()
 		return nil, err
 	}
 	req.closeBody()
 	if err = writer.Flush(); err != nil {
+		stop()
+		conn.Close()
 		return nil, err
 	}
 
-	req.onEOF = func() { conn.Close() }
+	req.onEOF = func() {
+		stop()
+		conn.Close()
+	}
 
 	reader := bufio.NewReader(conn)
-	return ReadResponse(reader, req)
+	resp, err := ReadResponse(reader, req)
+	if err != nil {
+		stop()
+		conn.Close()
+	}
+	return resp, err
 }
 
 // See 2 (end of page 4) https://www.ietf.org/rfc/rfc2617.txt

@@ -52,6 +52,9 @@ func (timeoutError) Error() string   { return "i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
 
+// Is matches os.ErrDeadlineExceeded, as Go's timeout errors do.
+func (timeoutError) Is(target error) bool { return target == os.ErrDeadlineExceeded }
+
 func (*hostNetdev) GetHostByName(name string) (netip.Addr, error) {
 	return hostLookup(name)
 }

@@ -204,7 +204,11 @@ func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 
 	fixPragmaCacheControl(resp.Header)
 
-	err = readTransfer(resp, r, req.onEOF)
+	var onEOF func()
+	if req != nil {
+		onEOF = req.onEOF
+	}
+	err = readTransfer(resp, r, onEOF)
 	if err != nil {
 		return nil, err
 	}

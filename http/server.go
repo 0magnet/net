@@ -2289,52 +2289,133 @@ func RedirectHandler(url string, code int) Handler {
 // patterns and calls the handler for the pattern that
 // most closely matches the URL.
 //
-// Patterns name fixed, rooted paths, like "/favicon.ico",
-// or rooted subtrees, like "/images/" (note the trailing slash).
-// Longer patterns take precedence over shorter ones, so that
-// if there are handlers registered for both "/images/"
-// and "/images/thumbnails/", the latter handler will be
-// called for paths beginning with "/images/thumbnails/" and the
-// former will receive requests for any other paths in the
-// "/images/" subtree.
+// # Patterns
 //
-// Note that since a pattern ending in a slash names a rooted subtree,
-// the pattern "/" matches all paths not matched by other registered
-// patterns, not just the URL with Path == "/".
+// Patterns can match the method, host and path of a request.
+// Some examples:
 //
-// If a subtree has been registered and a request is received naming the
-// subtree root without its trailing slash, ServeMux redirects that
-// request to the subtree root (adding the trailing slash). This behavior can
-// be overridden with a separate registration for the path without
-// the trailing slash. For example, registering "/images/" causes ServeMux
+//   - "/index.html" matches the path "/index.html" for any host and method.
+//   - "GET /static/" matches a GET request whose path begins with "/static/".
+//   - "example.com/" matches any request to the host "example.com".
+//   - "example.com/{$}" matches requests with host "example.com" and path "/".
+//   - "/b/{bucket}/o/{objectname...}" matches paths whose first segment is "b"
+//     and whose third segment is "o". The name "bucket" denotes the second
+//     segment and "objectname" denotes the remainder of the path.
+//
+// In general, a pattern looks like
+//
+//	[METHOD ][HOST]/[PATH]
+//
+// All three parts are optional; "/" is a valid pattern.
+// If METHOD is present, it must be followed by at least one space or tab.
+//
+// Literal (that is, non-wildcard) parts of a pattern match
+// the corresponding parts of a request case-sensitively.
+//
+// A pattern with no method matches every method. A pattern
+// with the method GET matches both GET and HEAD requests.
+// Otherwise, the method must match exactly.
+//
+// A pattern with no host matches every host.
+// A pattern with a host matches URLs on that host only.
+//
+// A path can include wildcard segments of the form {NAME} or {NAME...}.
+// For example, "/b/{bucket}/o/{objectname...}".
+// The wildcard name must be a valid Go identifier.
+// Wildcards must be full path segments: they must be preceded by a slash and followed by
+// either a slash or the end of the string.
+// For example, "/b_{bucket}" is not a valid pattern.
+//
+// Normally a wildcard matches only a single path segment,
+// ending at the next literal slash (not %2F) in the request URL.
+// But if the "..." is present, then the wildcard matches the remainder of the URL path, including slashes.
+// (Therefore it is invalid for a "..." wildcard to appear anywhere but at the end of a pattern.)
+// The match for a wildcard can be obtained by calling [Request.PathValue] with the wildcard's name.
+// A trailing slash in a path acts as an anonymous "..." wildcard.
+//
+// The special wildcard {$} matches only the end of the URL.
+// For example, the pattern "/{$}" matches only the path "/",
+// whereas the pattern "/" matches every path.
+//
+// For matching, both pattern paths and incoming request paths are unescaped segment by segment.
+// So, for example, the path "/a%2Fb/100%25" is treated as having two segments, "a/b" and "100%".
+// The pattern "/a%2fb/" matches it, but the pattern "/a/b/" does not.
+//
+// # Precedence
+//
+// If two or more patterns match a request, then the most specific pattern takes precedence.
+// A pattern P1 is more specific than P2 if P1 matches a strict subset of P2’s requests;
+// that is, if P2 matches all the requests of P1 and more.
+// If neither is more specific, then the patterns conflict.
+// There is one exception to this rule, for backwards compatibility:
+// if two patterns would otherwise conflict and one has a host while the other does not,
+// then the pattern with the host takes precedence.
+// If a pattern passed to [ServeMux.Handle] or [ServeMux.HandleFunc] conflicts with
+// another pattern that is already registered, those functions panic.
+//
+// As an example of the general rule, "/images/thumbnails/" is more specific than "/images/",
+// so both can be registered.
+// The former matches paths beginning with "/images/thumbnails/"
+// and the latter will match any other path in the "/images/" subtree.
+//
+// As another example, consider the patterns "GET /" and "/index.html":
+// both match a GET request for "/index.html", but the former pattern
+// matches all other GET and HEAD requests, while the latter matches any
+// request for "/index.html" that uses a different method.
+// The patterns conflict.
+//
+// # Trailing-slash redirection
+//
+// Consider a [ServeMux] with a handler for a subtree, registered using a trailing slash or "..." wildcard.
+// If the ServeMux receives a request for the subtree root without a trailing slash,
+// it redirects the request by adding the trailing slash.
+// This behavior can be overridden with a separate registration for the path without
+// the trailing slash or "..." wildcard. For example, registering "/images/" causes ServeMux
 // to redirect a request for "/images" to "/images/", unless "/images" has
 // been registered separately.
 //
-// Patterns may optionally begin with a host name, restricting matches to
-// URLs on that host only. Host-specific patterns take precedence over
-// general patterns, so that a handler might register for the two patterns
-// "/codesearch" and "codesearch.google.com/" without also taking over
-// requests for "http://www.google.com/".
+// # Request sanitizing
 //
 // ServeMux also takes care of sanitizing the URL request path and the Host
 // header, stripping the port number and redirecting any request containing . or
-// .. elements or repeated slashes to an equivalent, cleaner URL.
+// .. segments or repeated slashes to an equivalent, cleaner URL.
+// Escaped path elements such as "%2e" for "." and "%2f" for "/" are preserved
+// and aren't considered separators for request routing.
+//
+// # Compatibility
+//
+// The pattern syntax and matching behavior of ServeMux changed significantly
+// in Go 1.22. To restore the old behavior, set the GODEBUG environment variable
+// to "httpmuxgo121=1". This setting is read once, at program startup; changes
+// during execution will be ignored.
+//
+// The backwards-incompatible changes include:
+//   - Wildcards are just ordinary literal path segments in 1.21.
+//     For example, the pattern "/{x}" will match only that path in 1.21,
+//     but will match any one-segment path in 1.22.
+//   - In 1.21, no pattern was rejected, unless it was empty or conflicted with an existing pattern.
+//     In 1.22, syntactically invalid patterns will cause [ServeMux.Handle] and [ServeMux.HandleFunc] to panic.
+//     For example, in 1.21, the patterns "/{"  and "/a{x}" match themselves,
+//     but in 1.22 they are invalid and will cause a panic when registered.
+//   - In 1.22, each segment of a pattern is unescaped; this was not done in 1.21.
+//     For example, in 1.22 the pattern "/%61" matches the path "/a" ("%61" being the URL escape sequence for "a"),
+//     but in 1.21 it would match only the path "/%2561" (where "%25" is the escape for the percent sign).
+//   - When matching patterns to paths, in 1.22 each segment of the path is unescaped; in 1.21, the entire path is unescaped.
+//     This change mostly affects how paths with %2F escapes adjacent to slashes are treated.
+//     See https://go.dev/issue/21955 for details.
 type ServeMux struct {
-	mu    sync.RWMutex
-	m     map[string]muxEntry
-	es    []muxEntry // slice of entries sorted from longest to shortest.
-	hosts bool       // whether any patterns contain hostnames
+	mu     sync.RWMutex
+	tree   routingNode
+	index  routingIndex
+	mux121 serveMux121 // used only when GODEBUG=httpmuxgo121=1
 }
 
-type muxEntry struct {
-	h       Handler
-	pattern string
+// NewServeMux allocates and returns a new [ServeMux].
+func NewServeMux() *ServeMux {
+	return &ServeMux{}
 }
 
-// NewServeMux allocates and returns a new ServeMux.
-func NewServeMux() *ServeMux { return new(ServeMux) }
-
-// DefaultServeMux is the default ServeMux used by Serve.
+// DefaultServeMux is the default [ServeMux] used by [Serve].
 var DefaultServeMux = &defaultServeMux
 
 var defaultServeMux ServeMux
@@ -2374,120 +2455,6 @@ func stripHostPort(h string) string {
 	return host
 }
 
-// Find a handler on a handler map given a path string.
-// Most-specific (longest) pattern wins.
-func (mux *ServeMux) match(path string) (h Handler, pattern string) {
-	// Check for exact match first.
-	v, ok := mux.m[path]
-	if ok {
-		return v.h, v.pattern
-	}
-
-	// Check for longest valid match with path placeholders (like /users/{id})
-	// First collect all potential matching patterns
-	var matchingPatterns []string
-	for registeredPattern := range mux.m {
-		// Skip patterns ending with "/" as they are handled separately
-		if registeredPattern[len(registeredPattern)-1] == '/' {
-			continue
-		}
-
-		// If the pattern contains placeholders and could match the path
-		if strings.Contains(registeredPattern, "{") && strings.Contains(registeredPattern, "}") {
-			if patternCouldMatch(registeredPattern, path) {
-				matchingPatterns = append(matchingPatterns, registeredPattern)
-			}
-		}
-	}
-
-	// Find the longest matching pattern
-	if len(matchingPatterns) > 0 {
-		sort.Slice(matchingPatterns, func(i, j int) bool {
-			return len(matchingPatterns[i]) > len(matchingPatterns[j])
-		})
-
-		pattern = matchingPatterns[0]
-		return mux.m[pattern].h, pattern
-	}
-
-	// Check for longest valid match.  mux.es contains all patterns
-	// that end in / sorted from longest to shortest.
-	for _, e := range mux.es {
-		if strings.HasPrefix(path, e.pattern) {
-			return e.h, e.pattern
-		}
-	}
-	return nil, ""
-}
-
-// patternCouldMatch checks if a pattern with placeholders could match the given path.
-// It handles patterns like /users/{id}/orders/{orderId}.
-func patternCouldMatch(pattern, path string) bool {
-	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
-	pathParts := strings.Split(strings.Trim(path, "/"), "/")
-
-	// If they have different number of parts, they can't match
-	if len(patternParts) != len(pathParts) {
-		return false
-	}
-
-	// Check each part
-	for i, patternPart := range patternParts {
-		// If it's a placeholder, it matches anything
-		if strings.HasPrefix(patternPart, "{") && strings.HasSuffix(patternPart, "}") {
-			continue
-		}
-
-		// If it's not a placeholder, it must match exactly
-		if patternPart != pathParts[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-// redirectToPathSlash determines if the given path needs appending "/" to it.
-// This occurs when a handler for path + "/" was already registered, but
-// not for path itself. If the path needs appending to, it creates a new
-// URL, setting the path to u.Path + "/" and returning true to indicate so.
-func (mux *ServeMux) redirectToPathSlash(host, path string, u *url.URL) (*url.URL, bool) {
-	mux.mu.RLock()
-	shouldRedirect := mux.shouldRedirectRLocked(host, path)
-	mux.mu.RUnlock()
-	if !shouldRedirect {
-		return u, false
-	}
-	path = path + "/"
-	u = &url.URL{Path: path, RawQuery: u.RawQuery}
-	return u, true
-}
-
-// shouldRedirectRLocked reports whether the given path and host should be redirected to
-// path+"/". This should happen if a handler is registered for path+"/" but
-// not path -- see comments at ServeMux.
-func (mux *ServeMux) shouldRedirectRLocked(host, path string) bool {
-	p := []string{path, host + path}
-
-	for _, c := range p {
-		if _, exist := mux.m[c]; exist {
-			return false
-		}
-	}
-
-	n := len(path)
-	if n == 0 {
-		return false
-	}
-	for _, c := range p {
-		if _, exist := mux.m[c+"/"]; exist {
-			return path[n-1] != '/'
-		}
-	}
-
-	return false
-}
-
 // Handler returns the handler to use for the given request,
 // consulting r.Method, r.Host, and r.URL.Path. It always returns
 // a non-nil handler. If the path is not in its canonical form, the
@@ -2499,91 +2466,201 @@ func (mux *ServeMux) shouldRedirectRLocked(host, path string) bool {
 //
 // Handler also returns the registered pattern that matches the
 // request or, in the case of internally-generated redirects,
-// the pattern that will match after following the redirect.
+// the path that will match after following the redirect.
 //
 // If there is no registered handler that applies to the request,
-// Handler returns a “page not found” handler and an empty pattern.
+// Handler returns a “page not found” or “method not supported”
+// handler and an empty pattern.
+//
+// Handler does not modify its argument. In particular, it does not
+// populate named path wildcards, so r.PathValue will always return
+// the empty string.
 func (mux *ServeMux) Handler(r *Request) (h Handler, pattern string) {
+	if use121 {
+		return mux.mux121.findHandler(r)
+	}
+	h, p, _, _ := mux.findHandler(r)
+	return h, p
+}
 
+// findHandler finds a handler for a request.
+// If there is a matching handler, it returns it and the pattern that matched.
+// Otherwise it returns a Redirect or NotFound handler with the path that would match
+// after the redirect.
+func (mux *ServeMux) findHandler(r *Request) (h Handler, patStr string, _ *pattern, matches []string) {
+	var n *routingNode
+	host := r.URL.Host
+	escapedPath := r.URL.EscapedPath()
+	path := escapedPath
 	// CONNECT requests are not canonicalized.
 	if r.Method == "CONNECT" {
 		// If r.URL.Path is /tree and its handler is not registered,
 		// the /tree -> /tree/ redirect applies to CONNECT requests
 		// but the path canonicalization does not.
-		if u, ok := mux.redirectToPathSlash(r.URL.Host, r.URL.Path, r.URL); ok {
-			return RedirectHandler(u.String(), StatusMovedPermanently), u.Path
+		_, _, u := mux.matchOrRedirect(host, r.Method, path, r.URL)
+		if u != nil {
+			return RedirectHandler(u.String(), StatusTemporaryRedirect), u.Path, nil, nil
 		}
+		// Redo the match, this time with r.Host instead of r.URL.Host.
+		// Pass a nil URL to skip the trailing-slash redirect logic.
+		n, matches, _ = mux.matchOrRedirect(r.Host, r.Method, path, nil)
+	} else {
+		// All other requests have any port stripped and path cleaned
+		// before passing to mux.handler.
+		host = stripHostPort(r.Host)
+		path = cleanPath(path)
 
-		return mux.handler(r.Host, r.URL.Path)
+		// If the given path is /tree and its handler is not registered,
+		// redirect for /tree/.
+		var u *url.URL
+		n, matches, u = mux.matchOrRedirect(host, r.Method, path, r.URL)
+		if u != nil {
+			return RedirectHandler(u.String(), StatusTemporaryRedirect), n.pattern.String(), nil, nil
+		}
+		if path != escapedPath {
+			// Redirect to cleaned path.
+			patStr := ""
+			if n != nil {
+				patStr = n.pattern.String()
+			}
+			u := urlFromEscaped(path, r.URL.RawQuery)
+			return RedirectHandler(u.String(), StatusTemporaryRedirect), patStr, nil, nil
+		}
 	}
-
-	// All other requests have any port stripped and path cleaned
-	// before passing to mux.handler.
-	host := stripHostPort(r.Host)
-	path := cleanPath(r.URL.Path)
-
-	// If the given path is /tree and its handler is not registered,
-	// redirect for /tree/.
-	if u, ok := mux.redirectToPathSlash(host, path, r.URL); ok {
-		return RedirectHandler(u.String(), StatusMovedPermanently), u.Path
+	if n == nil {
+		// We didn't find a match with the request method. To distinguish between
+		// Not Found and Method Not Allowed, see if there is another pattern that
+		// matches except for the method.
+		allowedMethods := mux.matchingMethods(host, path)
+		if len(allowedMethods) > 0 {
+			return HandlerFunc(func(w ResponseWriter, r *Request) {
+				w.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+				Error(w, StatusText(StatusMethodNotAllowed), StatusMethodNotAllowed)
+			}), "", nil, nil
+		}
+		return NotFoundHandler(), "", nil, nil
 	}
-
-	if path != r.URL.Path {
-		_, pattern = mux.handler(host, path)
-		u := &url.URL{Path: path, RawQuery: r.URL.RawQuery}
-		return RedirectHandler(u.String(), StatusMovedPermanently), pattern
-	}
-
-	return mux.handler(host, r.URL.Path)
+	return n.handler, n.pattern.String(), n.pattern, matches
 }
 
-// handler is the main implementation of Handler.
-// The path is known to be in canonical form, except for CONNECT methods.
-func (mux *ServeMux) handler(host, path string) (h Handler, pattern string) {
+// matchOrRedirect looks up a node in the tree that matches the host, method and path.
+//
+// If the url argument is non-nil, handler also deals with trailing-slash
+// redirection: when a path doesn't match exactly, the match is tried again
+// after appending "/" to the path. If that second match succeeds, the last
+// return value is the URL to redirect to.
+func (mux *ServeMux) matchOrRedirect(host, method, path string, u *url.URL) (_ *routingNode, matches []string, redirectTo *url.URL) {
 	mux.mu.RLock()
 	defer mux.mu.RUnlock()
 
-	// Host-specific pattern takes precedence over generic ones
-	if mux.hosts {
-		h, pattern = mux.match(host + path)
-	}
-	if h == nil {
-		h, pattern = mux.match(path)
-	}
-	if h == nil {
-		h, pattern = NotFoundHandler(), ""
-	}
-	return
-}
-
-// extractPathValues extracts path parameter values from a URL path based on a pattern.
-// It handles patterns with placeholders like /users/{id}/orders/{orderId}
-// and returns a map of parameter names to their values.
-func extractPathValues(pattern, path string) map[string]string {
-	pathValues := make(map[string]string)
-
-	// Split both pattern and path by "/"
-	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
-	pathParts := strings.Split(strings.Trim(path, "/"), "/")
-
-	// If they have different lengths, they can't match (unless the pattern has a wildcard)
-	if len(patternParts) != len(pathParts) {
-		return pathValues
-	}
-
-	// Compare each part
-	for i, patternPart := range patternParts {
-		if strings.HasPrefix(patternPart, "{") && strings.HasSuffix(patternPart, "}") {
-			// This is a placeholder like {id}
-			paramName := patternPart[1 : len(patternPart)-1]
-			pathValues[paramName] = pathParts[i]
-		} else if patternPart != pathParts[i] {
-			// If a non-placeholder part doesn't match, return empty
-			return make(map[string]string)
+	n, matches := mux.tree.match(host, method, path)
+	// We can terminate here if any of the following is true:
+	// - We have an exact match already.
+	// - We were asked not to try trailing slash redirection.
+	// - The URL already has a trailing slash.
+	// - The URL is an empty string.
+	if !exactMatch(n, path) && u != nil && !strings.HasSuffix(path, "/") && path != "" {
+		// If there is an exact match with a trailing slash, then redirect.
+		path += "/"
+		n2, _ := mux.tree.match(host, method, path)
+		if exactMatch(n2, path) {
+			// It is safe to return n2 here: it is used only in the second RedirectHandler case
+			// of findHandler, and that method returns before it does the "n == nil" check where
+			// the first return value matters. We return it here only to make the pattern available
+			// to findHandler.
+			return n2, nil, urlFromEscaped(path, u.RawQuery)
 		}
 	}
+	return n, matches, nil
+}
 
-	return pathValues
+// urlFromEscaped returns a url.URL constructed from an escaped path and a raw
+// query.
+//
+// It ensures that the Path and RawPath fields are in sync by unescaping the
+// escaped path. Populating only the Path field and leaving RawPath empty (or
+// failing to keep them in sync) can cause url.URL.String to produce a URL with
+// either unexpected escaping (e.g., double-escaping "%" into "%25" in an
+// already escaped path) or a lack thereof (e.g., losing the escaping of "%2f"
+// and turning it into a literal path separator "/").
+func urlFromEscaped(escaped, rawQuery string) *url.URL {
+	unescaped, err := url.PathUnescape(escaped)
+	// Should be impossible, since ServeMux will reject unparsable URLs way
+	// earlier.
+	if err != nil {
+		unescaped = escaped
+	}
+	return &url.URL{
+		Path:     unescaped,
+		RawPath:  escaped,
+		RawQuery: rawQuery,
+	}
+}
+
+// exactMatch reports whether the node's pattern exactly matches the path.
+// As a special case, if the node is nil, exactMatch return false.
+//
+// Before wildcards were introduced, it was clear that an exact match meant
+// that the pattern and path were the same string. The only other possibility
+// was that a trailing-slash pattern, like "/", matched a path longer than
+// it, like "/a".
+//
+// With wildcards, we define an inexact match as any one where a multi wildcard
+// matches a non-empty string. All other matches are exact.
+// For example, these are all exact matches:
+//
+//	pattern   path
+//	/a        /a
+//	/{x}      /a
+//	/a/{$}    /a/
+//	/a/       /a/
+//
+// The last case has a multi wildcard (implicitly), but the match is exact because
+// the wildcard matches the empty string.
+//
+// Examples of matches that are not exact:
+//
+//	pattern   path
+//	/         /a
+//	/a/{x...} /a/b
+func exactMatch(n *routingNode, path string) bool {
+	if n == nil {
+		return false
+	}
+	// We can't directly implement the definition (empty match for multi
+	// wildcard) because we don't record a match for anonymous multis.
+
+	// If there is no multi, the match is exact.
+	if !n.pattern.lastSegment().multi {
+		return true
+	}
+
+	// If the path doesn't end in a trailing slash, then the multi match
+	// is non-empty.
+	if len(path) > 0 && path[len(path)-1] != '/' {
+		return false
+	}
+	// Only patterns ending in {$} or a multi wildcard can
+	// match a path with a trailing slash.
+	// For the match to be exact, the number of pattern
+	// segments should be the same as the number of slashes in the path.
+	// E.g. "/a/b/{$}" and "/a/b/{...}" exactly match "/a/b/", but "/a/" does not.
+	return len(n.pattern.segments) == strings.Count(path, "/")
+}
+
+// matchingMethods return a sorted list of all methods that would match with the given host and path.
+func (mux *ServeMux) matchingMethods(host, path string) []string {
+	// Hold the read lock for the entire method so that the two matches are done
+	// on the same set of registered patterns.
+	mux.mu.RLock()
+	defer mux.mu.RUnlock()
+	ms := map[string]bool{}
+	mux.tree.matchingMethods(host, path, ms)
+	// matchOrRedirect will try appending a trailing slash if there is no match.
+	if !strings.HasSuffix(path, "/") {
+		mux.tree.matchingMethods(host, path+"/", ms)
+	}
+	return slices.Sorted(maps.Keys(ms))
 }
 
 // ServeHTTP dispatches the request to the handler whose
@@ -2596,84 +2673,111 @@ func (mux *ServeMux) ServeHTTP(w ResponseWriter, r *Request) {
 		w.WriteHeader(StatusBadRequest)
 		return
 	}
-	h, pattern := mux.Handler(r)
-
-	// Extract path values for patterns that contain placeholders like {id}
-	if strings.Contains(pattern, "{") && strings.Contains(pattern, "}") {
-		pathValues := extractPathValues(pattern, r.URL.Path)
-
-		// Set path values in the request
-		for name, value := range pathValues {
-			r.SetPathValue(name, value)
-		}
+	var h Handler
+	if use121 {
+		h, _ = mux.mux121.findHandler(r)
+	} else {
+		h, r.Pattern, r.pat, r.matches = mux.findHandler(r)
 	}
-
 	h.ServeHTTP(w, r)
 }
 
+// The four functions below all call ServeMux.register so that callerLocation
+// always refers to user code.
+
 // Handle registers the handler for the given pattern.
-// If a handler already exists for pattern, Handle panics.
+// If the given pattern conflicts with one that is already registered
+// or if the pattern is invalid, Handle panics.
+//
+// See [ServeMux] for details on valid patterns and conflict rules.
 func (mux *ServeMux) Handle(pattern string, handler Handler) {
-	mux.mu.Lock()
-	defer mux.mu.Unlock()
-
-	if pattern == "" {
-		panic("http: invalid pattern")
+	if use121 {
+		mux.mux121.handle(pattern, handler)
+	} else {
+		mux.register(pattern, handler)
 	}
-	if handler == nil {
-		panic("http: nil handler")
-	}
-	if _, exist := mux.m[pattern]; exist {
-		panic("http: multiple registrations for " + pattern)
-	}
-
-	if mux.m == nil {
-		mux.m = make(map[string]muxEntry)
-	}
-	e := muxEntry{h: handler, pattern: pattern}
-	mux.m[pattern] = e
-	if pattern[len(pattern)-1] == '/' {
-		mux.es = appendSorted(mux.es, e)
-	}
-
-	if pattern[0] != '/' {
-		mux.hosts = true
-	}
-}
-
-func appendSorted(es []muxEntry, e muxEntry) []muxEntry {
-	n := len(es)
-	i := sort.Search(n, func(i int) bool {
-		return len(es[i].pattern) < len(e.pattern)
-	})
-	if i == n {
-		return append(es, e)
-	}
-	// we now know that i points at where we want to insert
-	es = append(es, muxEntry{}) // try to grow the slice in place, any entry works.
-	copy(es[i+1:], es[i:])      // Move shorter entries down
-	es[i] = e
-	return es
 }
 
 // HandleFunc registers the handler function for the given pattern.
+// If the given pattern conflicts with one that is already registered
+// or if the pattern is invalid, HandleFunc panics.
+//
+// See [ServeMux] for details on valid patterns and conflict rules.
 func (mux *ServeMux) HandleFunc(pattern string, handler func(ResponseWriter, *Request)) {
-	if handler == nil {
-		panic("http: nil handler")
+	if use121 {
+		mux.mux121.handleFunc(pattern, handler)
+	} else {
+		mux.register(pattern, HandlerFunc(handler))
 	}
-	mux.Handle(pattern, HandlerFunc(handler))
 }
 
-// Handle registers the handler for the given pattern
-// in the DefaultServeMux.
-// The documentation for ServeMux explains how patterns are matched.
-func Handle(pattern string, handler Handler) { DefaultServeMux.Handle(pattern, handler) }
+// Handle registers the handler for the given pattern in [DefaultServeMux].
+// The documentation for [ServeMux] explains how patterns are matched.
+func Handle(pattern string, handler Handler) {
+	if use121 {
+		DefaultServeMux.mux121.handle(pattern, handler)
+	} else {
+		DefaultServeMux.register(pattern, handler)
+	}
+}
 
-// HandleFunc registers the handler function for the given pattern
-// in the DefaultServeMux.
-// The documentation for ServeMux explains how patterns are matched.
+// HandleFunc registers the handler function for the given pattern in [DefaultServeMux].
+// The documentation for [ServeMux] explains how patterns are matched.
 func HandleFunc(pattern string, handler func(ResponseWriter, *Request)) {
-	DefaultServeMux.HandleFunc(pattern, handler)
+	if use121 {
+		DefaultServeMux.mux121.handleFunc(pattern, handler)
+	} else {
+		DefaultServeMux.register(pattern, HandlerFunc(handler))
+	}
+}
+
+func (mux *ServeMux) register(pattern string, handler Handler) {
+	if err := mux.registerErr(pattern, handler); err != nil {
+		panic(err)
+	}
+}
+
+func (mux *ServeMux) registerErr(patstr string, handler Handler) error {
+	if patstr == "" {
+		return errors.New("http: invalid pattern")
+	}
+	if handler == nil {
+		return errors.New("http: nil handler")
+	}
+	if f, ok := handler.(HandlerFunc); ok && f == nil {
+		return errors.New("http: nil handler")
+	}
+
+	pat, err := parsePattern(patstr)
+	if err != nil {
+		return fmt.Errorf("parsing %q: %w", patstr, err)
+	}
+
+	// Get the caller's location, for better conflict error messages.
+	// Skip register and whatever calls it.
+	_, file, line, ok := runtime.Caller(3)
+	if !ok {
+		pat.loc = "unknown location"
+	} else {
+		pat.loc = fmt.Sprintf("%s:%d", file, line)
+	}
+
+	mux.mu.Lock()
+	defer mux.mu.Unlock()
+	// Check for conflict.
+	if err := mux.index.possiblyConflictingPatterns(pat, func(pat2 *pattern) error {
+		if pat.conflictsWith(pat2) {
+			d := describeConflict(pat, pat2)
+			return fmt.Errorf("pattern %q (registered at %s) conflicts with pattern %q (registered at %s):\n%s",
+				pat, pat.loc, pat2, pat2.loc, d)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	mux.tree.addPattern(pat, handler)
+	mux.index.addPattern(pat)
+	return nil
 }
 
 // Serve accepts incoming HTTP connections on the listener l,

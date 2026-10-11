@@ -1,14 +1,14 @@
-//go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
+//go:build (linux || darwin) && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
 
-// TINYGO: Native (host) netdev for the TinyGo "linux" target.
+// TINYGO: Native (host) netdev for the TinyGo "linux" and "darwin" targets.
 //
-// On this target TinyGo does NOT override the "syscall" package, so the
-// standard library's syscall.Socket/Connect/Bind/... are available, and the
-// TinyGo compiler lowers syscall.Syscall/RawSyscall into inline-asm system
-// calls (see compiler/syscall.go). So the netdever interface is implemented
-// directly on the host's sockets, without a network driver or musl's
-// (omitted) src/network module. The calls that are specific to Linux are in
-// netdev_linux.go.
+// On these targets TinyGo does NOT override the "syscall" package, so the
+// standard library's syscall.Socket/Connect/Bind/... are available. On linux
+// the TinyGo compiler lowers syscall.Syscall/RawSyscall into inline-asm system
+// calls (see compiler/syscall.go), and on darwin they call libc as in Go. So
+// the netdever interface is implemented directly on the host's BSD sockets,
+// without a network driver or musl's (omitted) src/network module. The few
+// calls that differ between the two are in netdev_linux.go and netdev_darwin.go.
 //
 // See https://github.com/skycoin/skycoin/issues/2902.
 

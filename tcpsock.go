@@ -292,7 +292,14 @@ func (c *TCPConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+// CloseWrite shuts down the writing side of the TCP connection, so the peer
+// reads EOF while this side can still read.
+//
+// TINYGO: needs a netdev with ShutdownWrite, such as the host one.
 func (c *TCPConn) CloseWrite() error {
+	if s, ok := netdev.(interface{ ShutdownWrite(sockfd int) error }); ok {
+		return s.ShutdownWrite(c.fd)
+	}
 	return fmt.Errorf("CloseWrite not implemented")
 }
 

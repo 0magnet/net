@@ -2,16 +2,15 @@
 
 // TINYGO: Native (host) netdev for the TinyGo "linux" target.
 //
-// On the native linux target TinyGo does NOT override the "syscall" package, so
-// the standard library's syscall.Socket/Connect/Bind/... are available and the
-// TinyGo compiler lowers syscall.Syscall/RawSyscall into real inline-asm system
-// calls (see compiler/syscall.go). That means we can implement the netdever
-// interface directly on top of raw Linux sockets, without needing a network
-// driver or musl's (omitted) src/network module.
+// On this target TinyGo does NOT override the "syscall" package, so the
+// standard library's syscall.Socket/Connect/Bind/... are available, and the
+// TinyGo compiler lowers syscall.Syscall/RawSyscall into inline-asm system
+// calls (see compiler/syscall.go). So the netdever interface is implemented
+// directly on the host's sockets, without a network driver or musl's
+// (omitted) src/network module. The calls that are specific to Linux are in
+// netdev_linux.go.
 //
-// This file registers that implementation as the default netdev, so that
-// net.Dial/Listen/Lookup just work on a regular Linux host. See
-// https://github.com/skycoin/skycoin/issues/2902.
+// See https://github.com/skycoin/skycoin/issues/2902.
 
 package net
 
@@ -26,34 +25,6 @@ import (
 	"syscall"
 	"time"
 )
-
-// Register the host netdev as the default. A network driver (e.g. on a board
-// that also reports GOOS=linux, which doesn't happen today) could still replace
-// it by calling useNetdev() from its own init/setup.
-func init() {
-	useNetdev(&hostNetdev{})
-}
-
-// hostNetdev implements netdever using raw Linux sockets via the syscall
-// package. The "sockfd" values it returns are plain OS file descriptors.
-//
-// Deadlines are implemented with the per-socket SO_RCVTIMEO/SO_SNDTIMEO
-// options rather than a runtime poller. As a consequence, issuing concurrent
-// reads (or concurrent writes) with different deadlines on the same connection
-// is not supported; this matches the typical net.Conn usage of one reader and
-// one writer goroutine.
-type hostNetdev struct{}
-
-// timeoutError is returned from Send/Recv when a deadline expires. It satisfies
-// the net.Error interface so callers (e.g. net/http) can detect timeouts.
-type timeoutError struct{}
-
-func (timeoutError) Error() string   { return "i/o timeout" }
-func (timeoutError) Timeout() bool   { return true }
-func (timeoutError) Temporary() bool { return true }
-
-// Is matches os.ErrDeadlineExceeded, as Go's timeout errors do.
-func (timeoutError) Is(target error) bool { return target == os.ErrDeadlineExceeded }
 
 func (*hostNetdev) GetHostByName(name string) (netip.Addr, error) {
 	return hostLookup(name)
@@ -96,9 +67,9 @@ func (*hostNetdev) Socket(domain, stype, protocol int) (int, error) {
 		protocol = syscall.IPPROTO_TCP
 	}
 
-	// Non-blocking so the poller (netpoll_native.go) can park goroutines on
+	// Non-blocking so the poller (netpoll_*.go) can park goroutines on
 	// EAGAIN instead of pinning a thread in a blocking syscall.
-	fd, err := syscall.Socket(domain, stype|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, protocol)
+	fd, err := sysSocket(hostDomain(domain), stype, protocol)
 	if err != nil {
 		return -1, err
 	}
@@ -166,9 +137,9 @@ func (*hostNetdev) Listen(sockfd int, backlog int) error {
 
 func (*hostNetdev) Accept(sockfd int) (int, netip.AddrPort, error) {
 	for {
-		// Accept4 with SOCK_NONBLOCK|SOCK_CLOEXEC keeps accepted sockets
-		// non-blocking too, so their reads/writes also go through the poller.
-		nfd, sa, err := syscall.Accept4(sockfd, syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
+		// sysAccept keeps accepted sockets non-blocking too, so their reads
+		// and writes also go through the poller.
+		nfd, sa, err := sysAccept(sockfd)
 		switch err {
 		case nil:
 		case syscall.EINTR:
@@ -185,18 +156,6 @@ func (*hostNetdev) Accept(sockfd int) (int, netip.AddrPort, error) {
 		}
 		return nfd, addrPortFromSockaddr(sa), nil
 	}
-}
-
-// addrPortFromSockaddr converts a syscall.Sockaddr, as returned by
-// Accept/Getsockname, into a netip.AddrPort.
-func addrPortFromSockaddr(sa syscall.Sockaddr) netip.AddrPort {
-	switch s := sa.(type) {
-	case *syscall.SockaddrInet4:
-		return netip.AddrPortFrom(netip.AddrFrom4(s.Addr), uint16(s.Port))
-	case *syscall.SockaddrInet6:
-		return netip.AddrPortFrom(netip.AddrFrom16(s.Addr), uint16(s.Port))
-	}
-	return netip.AddrPort{}
 }
 
 // GetSockname reports the bound address.
@@ -218,8 +177,8 @@ func (*hostNetdev) Send(sockfd int, buf []byte, flags int, deadline time.Time) (
 		if expired(deadline) {
 			return total, timeoutError{}
 		}
-		// MSG_NOSIGNAL turns a write to a closed peer into EPIPE, not SIGPIPE.
-		n, err := syscall.SendmsgN(sockfd, buf[total:], nil, nil, syscall.MSG_NOSIGNAL)
+		// msgNoSignal turns a write to a closed peer into EPIPE, not SIGPIPE.
+		n, err := syscall.SendmsgN(sockfd, buf[total:], nil, nil, msgNoSignal)
 		if err != nil {
 			if err == syscall.EINTR {
 				continue
@@ -282,6 +241,7 @@ func (*hostNetdev) Close(sockfd int) error {
 }
 
 func (*hostNetdev) SetSockOpt(sockfd int, level int, opt int, value interface{}) error {
+	level, opt = hostSockopt(level, opt)
 	// SO_LINGER takes a struct linger; the net package passes it the linger
 	// seconds as an int.
 	if level == syscall.SOL_SOCKET && opt == syscall.SO_LINGER {
@@ -294,51 +254,6 @@ func (*hostNetdev) SetSockOpt(sockfd int, level int, opt int, value interface{})
 		return syscall.SetsockoptLinger(sockfd, level, opt, l)
 	}
 	return syscall.SetsockoptInt(sockfd, level, opt, toInt(value))
-}
-
-// toInt coerces the values the net package passes to SetSockOpt (int, bool, or
-// float64 durations) into an int.
-func toInt(value interface{}) int {
-	switch v := value.(type) {
-	case int:
-		return v
-	case bool:
-		if v {
-			return 1
-		}
-		return 0
-	case float64:
-		return int(v)
-	case int64:
-		return int(v)
-	default:
-		return 0
-	}
-}
-
-// sockaddr builds a syscall.Sockaddr from an AddrPort: a SockaddrInet6 for an
-// IPv6 address, otherwise a SockaddrInet4 (an invalid/zero address maps to the
-// 0.0.0.0 wildcard used when binding).
-func sockaddr(ip netip.AddrPort) syscall.Sockaddr {
-	return sockaddrFromParts(ip.Addr(), ip.Port())
-}
-
-func sockaddrFromParts(addr netip.Addr, port uint16) syscall.Sockaddr {
-	// As4/As16 panic on a wrongly-sized address, so dispatch on the family.
-	if addr = addr.Unmap(); addr.Is6() {
-		// Link-local zones (%zone) are not resolved to a scope id.
-		return &syscall.SockaddrInet6{Port: int(port), Addr: addr.As16()}
-	}
-	sa := &syscall.SockaddrInet4{Port: int(port)}
-	if addr.Is4() {
-		sa.Addr = addr.As4()
-	}
-	return sa
-}
-
-// expired reports whether a non-zero deadline is already in the past.
-func expired(deadline time.Time) bool {
-	return !deadline.IsZero() && !deadline.After(time.Now())
 }
 
 // setSockTimeout programs SO_RCVTIMEO/SO_SNDTIMEO so a blocking recv/send

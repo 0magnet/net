@@ -1,14 +1,14 @@
 //go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
 
-// TINYGO: a small epoll poller for the host netdev. A goroutine that would
-// block parks here until the fd is ready, its deadline passes, or it closes.
+// TINYGO: a small poller for the host netdev. A goroutine that would block
+// parks here until the fd is ready, its deadline passes, or it closes. The OS
+// part is in netpoll_epoll.go, which provides open, arm, unregister and loop.
 
 package net
 
 import (
 	"errors"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -17,10 +17,10 @@ var errPollClosed = errors.New("net: use of closed network connection")
 
 // pollDesc holds the goroutines currently waiting on one fd, split by direction.
 type pollDesc struct {
-	fd      int
-	readers []chan error
-	writers []chan error
-	inEpoll bool
+	fd         int
+	readers    []chan error
+	writers    []chan error
+	registered bool // the backend is polling fd
 
 	// Records an interrupt that arrived with no waiter parked, so the next
 	// wait in that direction returns at once instead of using a stale deadline.
@@ -46,66 +46,27 @@ type pollWaiter struct {
 type netPoller struct {
 	once sync.Once
 	err  error // set if the poller failed to initialize
-	epfd int
+	be   pollBackend
 
 	mu  sync.Mutex
 	fds map[int]*pollDesc
-	ev  syscall.EpollEvent // scratch for arm, guarded by mu
 }
 
 var poller netPoller
 
 func (p *netPoller) init() {
 	p.once.Do(func() {
-		epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
-		if err != nil {
+		if err := p.open(); err != nil {
 			p.err = err
 			return
 		}
-		p.epfd = epfd
 		p.fds = make(map[int]*pollDesc)
 		go p.loop()
 	})
 }
 
-// events returns the epoll interest mask for pd given its current waiters.
-func (pd *pollDesc) events() uint32 {
-	var ev uint32
-	if len(pd.readers) != 0 {
-		ev |= syscall.EPOLLIN | syscall.EPOLLRDHUP
-	}
-	if len(pd.writers) != 0 {
-		ev |= syscall.EPOLLOUT
-	}
-	if ev != 0 {
-		ev |= syscall.EPOLLONESHOT
-	}
-	return ev
-}
-
-// arm (re)programs epoll for pd. Must be called with p.mu held.
-func (p *netPoller) arm(pd *pollDesc) {
-	ev := pd.events()
-	if ev == 0 {
-		// Keep pd and the registration for the next wait. EPOLLONESHOT means an
-		// unwanted event fires at most once.
-		return
-	}
-	p.ev = syscall.EpollEvent{Events: ev, Fd: int32(pd.fd)}
-	if pd.inEpoll {
-		// ENOENT means the fd was closed without close() and its number reused.
-		if syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, pd.fd, &p.ev) != syscall.ENOENT {
-			return
-		}
-		pd.inEpoll = false
-	}
-	if err := syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, pd.fd, &p.ev); err == nil {
-		pd.inEpoll = true
-	}
-}
-
-// wait blocks until fd is ready in the requested direction (write=EPOLLOUT,
-// otherwise EPOLLIN), the deadline expires, or the fd is closed.
+// wait blocks until fd is ready in the requested direction (writable when
+// write, otherwise readable), the deadline expires, or the fd is closed.
 func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 	p.init()
 	if p.err != nil {
@@ -275,47 +236,10 @@ func (p *netPoller) close(fd int) {
 	if pd == nil {
 		return
 	}
-	if pd.inEpoll {
-		syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
-	}
+	p.unregister(pd)
 	delete(p.fds, fd)
 	pd.readers = wake(pd.readers, errPollClosed)
 	pd.writers = wake(pd.writers, errPollClosed)
-}
-
-// loop is the poller's background goroutine. It waits for epoll events
-// and wakes the corresponding parked goroutines.
-func (p *netPoller) loop() {
-	events := make([]syscall.EpollEvent, 64)
-	for {
-		n, err := syscall.EpollWait(p.epfd, events, -1)
-		if err != nil {
-			if err == syscall.EINTR {
-				continue
-			}
-			return
-		}
-		p.mu.Lock()
-		for i := 0; i < n; i++ {
-			e := events[i]
-			pd := p.fds[int(e.Fd)]
-			if pd == nil {
-				continue
-			}
-			// On error/hangup, wake everyone so they observe the real result.
-			hup := e.Events&(syscall.EPOLLERR|syscall.EPOLLHUP|syscall.EPOLLRDHUP) != 0
-			if hup || e.Events&syscall.EPOLLIN != 0 {
-				pd.readers = wake(pd.readers, nil)
-			}
-			if hup || e.Events&syscall.EPOLLOUT != 0 {
-				pd.writers = wake(pd.writers, nil)
-			}
-			// EPOLLONESHOT disabled the fd, so re-arm for any remaining waiters.
-			pd.inEpoll = true // it is still registered, just disarmed
-			p.arm(pd)
-		}
-		p.mu.Unlock()
-	}
 }
 
 // wake sends err to every waiter in s and returns s emptied, keeping its

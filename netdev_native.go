@@ -704,3 +704,8 @@ func skipName(msg []byte, off int) int {
 		}
 	}
 }
+
+// ShutdownWrite half-closes sockfd for TCPConn.CloseWrite.
+func (*hostNetdev) ShutdownWrite(sockfd int) error {
+	return syscall.Shutdown(sockfd, syscall.SHUT_WR)
+}

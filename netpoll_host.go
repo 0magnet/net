@@ -1,9 +1,9 @@
-//go:build (linux || darwin) && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
+//go:build (linux || darwin || windows) && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
 
 // TINYGO: a small poller for the host netdev. A goroutine that would block
 // parks here until the fd is ready, its deadline passes, or it closes. The OS
-// part is in netpoll_epoll.go and netpoll_kqueue.go, which provide open, arm,
-// unregister and loop.
+// part is in netpoll_epoll.go, netpoll_kqueue.go and netpoll_windows.go, which
+// provide open, arm, unregister and loop.
 
 package net
 

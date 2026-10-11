@@ -1,4 +1,4 @@
-//go:build !(linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm)
+//go:build !((linux || darwin || windows) && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm)
 
 package net
 

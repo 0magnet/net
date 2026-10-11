@@ -1,7 +1,8 @@
-//go:build (linux || darwin) && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
+//go:build (linux || darwin || windows) && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm
 
 // TINYGO: the parts of the host netdev that do not depend on the OS. The
-// socket calls are in netdev_native.go.
+// socket calls are in netdev_native.go for Linux and macOS and in
+// netdev_windows.go for Windows.
 
 package net
 

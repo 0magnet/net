@@ -303,7 +303,7 @@ func listenUDPControl(network string, laddr *UDPAddr, ctrl func(fd int) error) (
 // SyscallConn returns a raw network connection.
 // This implements the syscall.Conn interface.
 func (c *UDPConn) SyscallConn() (syscall.RawConn, error) {
-	return newRawConn(c.fd)
+	return newRawConn(c.fd, &c.readDeadline, &c.writeDeadline)
 }
 
 // TINYGO: Use netdev for Conn methods: Read = Recv, Write = Send, etc.

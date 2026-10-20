@@ -212,7 +212,7 @@ func DialTCP(network string, laddr, raddr *TCPAddr) (*TCPConn, error) {
 // SyscallConn returns a raw network connection.
 // This implements the [syscall.Conn] interface.
 func (c *TCPConn) SyscallConn() (syscall.RawConn, error) {
-	return newRawConn(c.fd)
+	return newRawConn(c.fd, &c.readDeadline, &c.writeDeadline)
 }
 
 func (c *TCPConn) Read(b []byte) (int, error) {
@@ -529,7 +529,7 @@ func (l *TCPListener) SetDeadline(t time.Time) error {
 //
 // TINYGO: mirrors the TCPConn stub. wazero's socket layer requires it.
 func (l *TCPListener) SyscallConn() (syscall.RawConn, error) {
-	return newRawConn(l.fd)
+	return newRawConn(l.fd, nil, nil)
 }
 
 // SetKeepAliveConfig configures the keep-alive probes the operating system

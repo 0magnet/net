@@ -281,7 +281,7 @@ func (lc *ListenConfig) control(network, address string) func(fd int) error {
 		return nil
 	}
 	return func(fd int) error {
-		rc, err := newRawConn(fd)
+		rc, err := newRawConn(fd, nil, nil)
 		if err != nil {
 			return err
 		}

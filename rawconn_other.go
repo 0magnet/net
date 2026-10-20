@@ -5,8 +5,9 @@ package net
 import (
 	"errors"
 	"syscall"
+	"time"
 )
 
-func newRawConn(fd int) (syscall.RawConn, error) {
+func newRawConn(fd int, rd, wd *time.Time) (syscall.RawConn, error) {
 	return nil, errors.New("SyscallConn not implemented")
 }

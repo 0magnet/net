@@ -8,6 +8,7 @@ package net
 
 import (
 	"net/netip"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -82,3 +83,8 @@ func sockaddrFromParts(addr netip.Addr, port uint16) syscall.Sockaddr {
 func expired(deadline time.Time) bool {
 	return !deadline.IsZero() && !deadline.After(time.Now())
 }
+
+var listenerBacklog = sync.OnceValue(maxListenerBacklog)
+
+// ListenBacklog is the system's listen backlog limit, which Go passes to listen.
+func (*hostNetdev) ListenBacklog() int { return listenerBacklog() }

@@ -447,7 +447,7 @@ func listenTCPControl(laddr *TCPAddr, ctrl func(fd int) error) (Listener, error)
 		return nil, err
 	}
 
-	err = netdev.Listen(fd, 5)
+	err = netdev.Listen(fd, listenBacklog())
 	if err != nil {
 		netdev.Close(fd)
 		return nil, err
@@ -502,7 +502,7 @@ func ListenTCP(network string, laddr *TCPAddr) (*TCPListener, error) {
 		return nil, err
 	}
 
-	if err = netdev.Listen(fd, 5); err != nil {
+	if err = netdev.Listen(fd, listenBacklog()); err != nil {
 		netdev.Close(fd)
 		return nil, err
 	}

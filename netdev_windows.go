@@ -285,3 +285,5 @@ func (*hostNetdev) SetSockOpt(sockfd int, level int, opt int, value interface{})
 func (*hostNetdev) ShutdownWrite(sockfd int) error {
 	return syscall.Shutdown(syscall.Handle(sockfd), syscall.SHUT_WR)
 }
+
+func maxListenerBacklog() int { return syscall.SOMAXCONN }

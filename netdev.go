@@ -65,6 +65,14 @@ func connectContext(ctx context.Context, sockfd int, host string, ip netip.AddrP
 	return netdev.Connect(sockfd, host, ip)
 }
 
+// listenBacklog is the netdev's listen backlog, or 5 for drivers that don't say.
+func listenBacklog() int {
+	if b, ok := netdev.(interface{ ListenBacklog() int }); ok {
+		return b.ListenBacklog()
+	}
+	return 5
+}
+
 func useNetdev(dev netdever) {
 	netdev = dev
 }

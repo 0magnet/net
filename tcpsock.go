@@ -206,6 +206,16 @@ func DialTCP(network string, laddr, raddr *TCPAddr) (*TCPConn, error) {
 // netdevs that cannot do so keep their default.
 func newTCPConn(fd int, network string, laddr, raddr *TCPAddr) *TCPConn {
 	netdev.SetSockOpt(fd, _SOL_TCP, _TCP_NODELAY, true)
+	if laddr == nil || laddr.IP == nil || laddr.IP.IsUnspecified() {
+		// Report the bound address, as Go does, where the netdev can tell.
+		if g, ok := netdev.(interface {
+			GetSockname(sockfd int) (netip.AddrPort, error)
+		}); ok {
+			if ap, err := g.GetSockname(fd); err == nil {
+				laddr = TCPAddrFromAddrPort(ap)
+			}
+		}
+	}
 	return &TCPConn{fd: fd, net: network, laddr: laddr, raddr: raddr}
 }
 

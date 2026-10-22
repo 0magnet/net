@@ -37,3 +37,13 @@ func TestTCPNoDelay(t *testing.T) {
 		t.Fatal("SetNoDelay(false) did not clear TCP_NODELAY")
 	}
 }
+
+func TestDialLocalAddr(t *testing.T) {
+	client, server := ephemeralTestPair(t)
+	defer client.Close()
+	defer server.Close()
+	la, _ := client.LocalAddr().(*TCPAddr)
+	if la == nil || la.Port == 0 || la.String() != server.RemoteAddr().String() {
+		t.Fatalf("dialed LocalAddr %v, peer sees %v", client.LocalAddr(), server.RemoteAddr())
+	}
+}

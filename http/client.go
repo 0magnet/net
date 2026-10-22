@@ -216,25 +216,75 @@ func send(req *Request, rt RoundTripper, deadline time.Time) (resp *Response, di
 		req.Header.Set("Authorization", "Basic "+basicAuth(username, password))
 	}
 
+	// TINYGO: Client.Timeout is applied as a ctx deadline on the request,
+	// which bounds the dial, the response headers and the body.
+	stopTimer, didTimeout := func() {}, alwaysFalse
+	if !deadline.IsZero() {
+		ctx, cancel := context.WithDeadline(req.Context(), deadline)
+		req = req.WithContext(ctx)
+		stopTimer = cancel
+		didTimeout = func() bool { return !time.Now().Before(deadline) }
+	}
+
 	resp, err = rt.RoundTrip(req)
 	if err != nil {
+		stopTimer()
 
 		// TINYGO: Remove TLS error check
 
-		// didTimeout must be non-nil whenever err != nil: c.do calls
-		// didTimeout() on the error path. The named return is nil here (TinyGo
-		// dropped setRequestCancel), so return alwaysFalse instead to avoid a
-		// nil func-value dereference on a failed dial.
-		return nil, alwaysFalse, err
+		return nil, didTimeout, err
 	}
 	if resp == nil {
+		stopTimer()
 		return nil, alwaysFalse, fmt.Errorf("http: sendit returned a nil *Response with a nil error")
 	}
 
 	// TINYGO: Skip check for resp.Body == nil since we'll set it in roundTrip
 
+	if !deadline.IsZero() {
+		resp.Body = &cancelTimerBody{stop: stopTimer, rc: resp.Body, reqDidTimeout: didTimeout}
+	}
 	return resp, nil, nil
 }
+
+// cancelTimerBody releases the Client.Timeout context when the body is done,
+// and reports a read error after that timeout as one.
+type cancelTimerBody struct {
+	stop          func()
+	rc            io.ReadCloser
+	reqDidTimeout func() bool
+}
+
+func (b *cancelTimerBody) Read(p []byte) (n int, err error) {
+	n, err = b.rc.Read(p)
+	if err == nil {
+		return n, nil
+	}
+	if err == io.EOF {
+		b.stop()
+		return n, err
+	}
+	if b.reqDidTimeout() {
+		err = &timeoutError{"context deadline exceeded (Client.Timeout or context cancellation while reading body)"}
+	}
+	return n, err
+}
+
+func (b *cancelTimerBody) Close() error {
+	err := b.rc.Close()
+	b.stop()
+	return err
+}
+
+// timeoutError is a net.Error that reports a timeout, as in Go.
+type timeoutError struct {
+	err string
+}
+
+func (e *timeoutError) Error() string     { return e.err }
+func (e *timeoutError) Timeout() bool     { return true }
+func (e *timeoutError) Temporary() bool   { return true }
+func (e *timeoutError) Is(err error) bool { return err == context.DeadlineExceeded }
 
 func (t *Transport) roundTrip(req *Request) (*Response, error) {
 
@@ -284,14 +334,15 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	// TINYGO: dial one connection for this request, send it, and return the
 	// response. The connection is closed when the response body hits EOF.
 
+	ctx := req.Context()
 	conn, usingProxy, proxyAuth, err := t.connect(req)
 	if err != nil {
 		req.closeBody()
-		return nil, err
+		return nil, ctxErr(ctx, err)
 	}
-	ctx := req.Context()
-	if dl, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(dl)
+	ctxDeadline, _ := ctx.Deadline()
+	if !ctxDeadline.IsZero() {
+		conn.SetDeadline(ctxDeadline)
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 
@@ -304,13 +355,13 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 		stop()
 		conn.Close()
 		req.closeBody()
-		return nil, err
+		return nil, ctxErr(ctx, err)
 	}
 	req.closeBody()
 	if err = writer.Flush(); err != nil {
 		stop()
 		conn.Close()
-		return nil, err
+		return nil, ctxErr(ctx, err)
 	}
 
 	req.onEOF = func() {
@@ -318,13 +369,42 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 		conn.Close()
 	}
 
+	var headerDeadline time.Time
+	if t.ResponseHeaderTimeout > 0 {
+		headerDeadline = time.Now().Add(t.ResponseHeaderTimeout)
+		if !ctxDeadline.IsZero() && ctxDeadline.Before(headerDeadline) {
+			headerDeadline = time.Time{}
+		} else {
+			conn.SetReadDeadline(headerDeadline)
+		}
+	}
+
 	reader := bufio.NewReader(conn)
 	resp, err := ReadResponse(reader, req)
 	if err != nil {
 		stop()
 		conn.Close()
+		if !headerDeadline.IsZero() && ctx.Err() == nil && !time.Now().Before(headerDeadline) {
+			return nil, &timeoutError{"net/http: timeout awaiting response headers"}
+		}
+		return nil, ctxErr(ctx, err)
 	}
-	return resp, err
+	if !headerDeadline.IsZero() {
+		conn.SetReadDeadline(ctxDeadline)
+	}
+	return resp, nil
+}
+
+// ctxErr returns ctx's error in place of err once ctx is done, since its
+// AfterFunc closing the conn is what made the I/O fail.
+func ctxErr(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
+	if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
 
 // See 2 (end of page 4) https://www.ietf.org/rfc/rfc2617.txt
@@ -473,9 +553,9 @@ func (c *Client) do(req *Request) (retres *Response, reterr error) {
 	if resp, didTimeout, err = c.send(req, deadline); err != nil {
 		// c.send() always closes req.Body
 		if !deadline.IsZero() && didTimeout() {
-			return nil, fmt.Errorf("%s (Client.Timeout exceeded while awaiting headers)", err.Error())
+			err = &timeoutError{err.Error() + " (Client.Timeout exceeded while awaiting headers)"}
 		}
-		return nil, err
+		return nil, &url.Error{Op: urlErrorOp(req.Method), URL: stripPassword(req.URL), Err: err}
 	}
 
 	return resp, nil
@@ -608,4 +688,15 @@ func (c *Client) CloseIdleConnections() {
 	if tr, ok := c.Transport.(closeIdler); ok {
 		tr.CloseIdleConnections()
 	}
+}
+
+// stripPassword returns u as a string with any password masked, as in Go.
+func stripPassword(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if _, passSet := u.User.Password(); passSet {
+		return strings.Replace(u.String(), u.User.String()+"@", u.User.Username()+":***@", 1)
+	}
+	return u.String()
 }

@@ -21,6 +21,7 @@ const (
 	_TCP_KEEPIDLE  = 0x4
 	_TCP_KEEPINTVL = 0x5
 	_TCP_KEEPCNT   = 0x6
+	_TCP_NODELAY   = 0x1
 	_IPPROTO_TCP   = 0x6
 	_IPPROTO_UDP   = 0x11
 	// Made up, not a real IP protocol number.  This is used to create a

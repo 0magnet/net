@@ -100,8 +100,17 @@ func (t *Transport) tlsClient(ctx context.Context, conn net.Conn, serverName str
 		cfg.ServerName = serverName
 	}
 	tc := tls.Client(conn, cfg)
-	if err := tc.HandshakeContext(ctx); err != nil {
+	hctx := ctx
+	if t.TLSHandshakeTimeout > 0 {
+		var cancel context.CancelFunc
+		hctx, cancel = context.WithTimeout(ctx, t.TLSHandshakeTimeout)
+		defer cancel()
+	}
+	if err := tc.HandshakeContext(hctx); err != nil {
 		conn.Close()
+		if ctx.Err() == nil && hctx.Err() != nil {
+			return nil, &timeoutError{"net/http: TLS handshake timeout"}
+		}
 		return nil, err
 	}
 	return tc, nil

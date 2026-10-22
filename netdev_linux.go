@@ -2,7 +2,12 @@
 
 package net
 
-import "syscall"
+import (
+	"os"
+	"strconv"
+	"strings"
+	"syscall"
+)
 
 // msgNoSignal makes a send to a closed peer return EPIPE instead of raising
 // SIGPIPE.
@@ -20,3 +25,16 @@ func sysAccept(fd int) (int, syscall.Sockaddr, error) {
 func hostDomain(domain int) int { return domain }
 
 func hostSockopt(level, opt int) (int, int) { return level, opt }
+
+// maxListenerBacklog reads the system limit, as Go does.
+func maxListenerBacklog() int {
+	b, err := os.ReadFile("/proc/sys/net/core/somaxconn")
+	if err != nil {
+		return syscall.SOMAXCONN
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n <= 0 {
+		return syscall.SOMAXCONN
+	}
+	return n
+}

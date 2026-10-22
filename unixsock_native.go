@@ -90,7 +90,7 @@ func ListenUnix(network string, laddr *UnixAddr) (*UnixListener, error) {
 		netdev.Close(fd)
 		return nil, &OpError{Op: "listen", Net: network, Addr: laddr, Err: err}
 	}
-	if err := netdev.Listen(fd, syscall.SOMAXCONN); err != nil {
+	if err := netdev.Listen(fd, listenBacklog()); err != nil {
 		netdev.Close(fd)
 		return nil, &OpError{Op: "listen", Net: network, Addr: laddr, Err: err}
 	}

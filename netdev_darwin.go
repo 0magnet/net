@@ -70,3 +70,5 @@ func hostSockopt(level, opt int) (int, int) {
 	}
 	return level, opt
 }
+
+func maxListenerBacklog() int { return syscall.SOMAXCONN }

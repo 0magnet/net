@@ -53,6 +53,14 @@ func pollInterrupt(sockfd int, write bool, deadline time.Time) {
 	}
 }
 
+// listenBacklog is the netdev's listen backlog, or 5 for drivers that don't say.
+func listenBacklog() int {
+	if b, ok := netdev.(interface{ ListenBacklog() int }); ok {
+		return b.ListenBacklog()
+	}
+	return 5
+}
+
 func useNetdev(dev netdever) {
 	netdev = dev
 }

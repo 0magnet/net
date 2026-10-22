@@ -56,7 +56,7 @@ func FileConn(f *os.File) (Conn, error) {
 		}
 		switch sotype {
 		case syscall.SOCK_STREAM:
-			c := &TCPConn{fd: fd, net: "tcp", laddr: TCPAddrFromAddrPort(la)}
+			c := newTCPConn(fd, "tcp", TCPAddrFromAddrPort(la), nil)
 			if ra.IsValid() {
 				c.raddr = TCPAddrFromAddrPort(ra)
 			}

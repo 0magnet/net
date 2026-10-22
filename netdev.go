@@ -3,6 +3,7 @@
 package net
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"time"
@@ -51,6 +52,17 @@ func pollInterrupt(sockfd int, write bool, deadline time.Time) {
 	if p, ok := netdev.(interface{ PollInterrupt(sockfd int, write bool) }); ok {
 		p.PollInterrupt(sockfd, write)
 	}
+}
+
+// connectContext connects sockfd, giving up at deadline or when ctx is done,
+// for netdevs that support it. Others connect without either.
+func connectContext(ctx context.Context, sockfd int, host string, ip netip.AddrPort, deadline time.Time) error {
+	if c, ok := netdev.(interface {
+		ConnectContext(ctx context.Context, sockfd int, host string, ip netip.AddrPort, deadline time.Time) error
+	}); ok {
+		return c.ConnectContext(ctx, sockfd, host, ip, deadline)
+	}
+	return netdev.Connect(sockfd, host, ip)
 }
 
 func useNetdev(dev netdever) {

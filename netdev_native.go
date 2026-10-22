@@ -17,6 +17,7 @@ package net
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net/netip"
 	"os"
@@ -88,6 +89,12 @@ func (*hostNetdev) Bind(sockfd int, ip netip.AddrPort) error {
 }
 
 func (n *hostNetdev) Connect(sockfd int, host string, ip netip.AddrPort) error {
+	return n.ConnectContext(context.Background(), sockfd, host, ip, time.Time{})
+}
+
+// ConnectContext connects sockfd, giving up with timeoutError at deadline, or
+// with ctx.Err() once ctx is done.
+func (n *hostNetdev) ConnectContext(ctx context.Context, sockfd int, host string, ip netip.AddrPort, deadline time.Time) error {
 	addr := ip.Addr()
 	if !addr.IsValid() || addr.IsUnspecified() {
 		// net.DialTLS passes the host name with a zero IP; resolve it here.
@@ -108,7 +115,7 @@ func (n *hostNetdev) Connect(sockfd int, host string, ip netip.AddrPort) error {
 		case syscall.EINPROGRESS, syscall.EALREADY, syscall.EAGAIN:
 			// A non-blocking connect is in progress. Wait for the socket to
 			// become writable, then read the pending error via SO_ERROR.
-			if werr := poller.wait(sockfd, true, time.Time{}); werr != nil {
+			if werr := waitConnect(ctx, sockfd, deadline); werr != nil {
 				return werr
 			}
 			soErr, gerr := syscall.GetsockoptInt(sockfd, syscall.SOL_SOCKET, syscall.SO_ERROR)
@@ -122,6 +129,26 @@ func (n *hostNetdev) Connect(sockfd int, host string, ip netip.AddrPort) error {
 		default:
 			return err
 		}
+	}
+}
+
+// waitConnect parks until sockfd is writable, deadline passes or ctx is done.
+func waitConnect(ctx context.Context, sockfd int, deadline time.Time) error {
+	stop := func() bool { return true }
+	if ctx.Done() != nil {
+		stop = context.AfterFunc(ctx, func() { poller.interrupt(sockfd, true, deadline) })
+	}
+	for {
+		err := poller.wait(sockfd, true, deadline)
+		if err == errPollInterrupted && ctx.Err() == nil {
+			continue
+		}
+		// A canceled ctx wins even if the connect just completed, as the
+		// interrupt it sent would otherwise be left pending on the fd.
+		if !stop() {
+			return ctx.Err()
+		}
+		return err
 	}
 }
 

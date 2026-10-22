@@ -8,7 +8,6 @@ package net
 
 import (
 	"net/netip"
-	"os"
 	"syscall"
 	"time"
 )
@@ -26,17 +25,6 @@ func init() {
 // Sockets are non-blocking. A goroutine that would block parks in the poller
 // (netpoll_*.go) until the socket is ready, its deadline passes, or it closes.
 type hostNetdev struct{}
-
-// timeoutError is returned from Send/Recv when a deadline expires. It satisfies
-// the net.Error interface so callers (e.g. net/http) can detect timeouts.
-type timeoutError struct{}
-
-func (timeoutError) Error() string   { return "i/o timeout" }
-func (timeoutError) Timeout() bool   { return true }
-func (timeoutError) Temporary() bool { return true }
-
-// Is matches os.ErrDeadlineExceeded, as Go's timeout errors do.
-func (timeoutError) Is(target error) bool { return target == os.ErrDeadlineExceeded }
 
 // addrPortFromSockaddr converts a syscall.Sockaddr, as returned by
 // Accept/Getsockname, into a netip.AddrPort.

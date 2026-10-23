@@ -4,6 +4,7 @@ package net
 
 import (
 	"errors"
+	"os"
 	"time"
 )
 
@@ -44,3 +45,22 @@ func ListenUnix(network string, laddr *UnixAddr) (*UnixListener, error) {
 func (l *UnixListener) Accept() (Conn, error)          { return nil, errUnixNotImplemented }
 func (l *UnixListener) AcceptUnix() (*UnixConn, error) { return nil, errUnixNotImplemented }
 func (l *UnixListener) Close() error                   { return errUnixNotImplemented }
+
+// ReadFrom is not implemented on this target.
+func (c *UnixConn) ReadFrom(b []byte) (int, Addr, error) { return 0, nil, errUnixNotImplemented }
+
+// ReadFromUnix is not implemented on this target.
+func (c *UnixConn) ReadFromUnix(b []byte) (int, *UnixAddr, error) {
+	return 0, nil, errUnixNotImplemented
+}
+
+// WriteTo is not implemented on this target.
+func (c *UnixConn) WriteTo(b []byte, addr Addr) (int, error) { return 0, errUnixNotImplemented }
+
+// WriteToUnix is not implemented on this target.
+func (c *UnixConn) WriteToUnix(b []byte, addr *UnixAddr) (int, error) {
+	return 0, errUnixNotImplemented
+}
+
+// File is not implemented on this target.
+func (l *UnixListener) File() (*os.File, error) { return nil, errUnixNotImplemented }

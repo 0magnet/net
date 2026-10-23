@@ -5,6 +5,7 @@ package net
 import (
 	"errors"
 	"io"
+	"os"
 	"time"
 )
 
@@ -155,3 +156,26 @@ func (c *UnixConn) ReadMsgUnix(b, oob []byte) (n, oobn, flags int, addr *UnixAdd
 func (c *UnixConn) WriteMsgUnix(b, oob []byte, addr *UnixAddr) (n, oobn int, err error) {
 	return 0, 0, errUnixMsgNotImplemented
 }
+
+var errUnixPacketNotImplemented = errors.New("net: unix datagram sockets not implemented on js")
+
+// ReadFrom is not implemented on js.
+func (c *UnixConn) ReadFrom(b []byte) (int, Addr, error) { return 0, nil, errUnixPacketNotImplemented }
+
+// ReadFromUnix is not implemented on js.
+func (c *UnixConn) ReadFromUnix(b []byte) (int, *UnixAddr, error) {
+	return 0, nil, errUnixPacketNotImplemented
+}
+
+// WriteTo is not implemented on js.
+func (c *UnixConn) WriteTo(b []byte, addr Addr) (int, error) {
+	return 0, errUnixPacketNotImplemented
+}
+
+// WriteToUnix is not implemented on js.
+func (c *UnixConn) WriteToUnix(b []byte, addr *UnixAddr) (int, error) {
+	return 0, errUnixPacketNotImplemented
+}
+
+// File is not implemented on js: the listener has no OS file descriptor.
+func (l *UnixListener) File() (*os.File, error) { return nil, errFileNotImplemented }

@@ -61,6 +61,15 @@ type Dialer struct {
 	// as with the Timeout option.
 	Deadline time.Time
 
+	// DualStack is deprecated and ignored, as in Go.
+	DualStack bool
+
+	// FallbackDelay is ignored: TINYGO dials one address family at a time.
+	FallbackDelay time.Duration
+
+	// Cancel is ignored. Deprecated: use DialContext.
+	Cancel <-chan struct{}
+
 	// LocalAddr is the local address to use when dialing an
 	// address. The address must be of a compatible type for the
 	// network being dialed.

@@ -106,6 +106,25 @@ type Transport struct {
 	// directly (e.g. the relay WebSocket transport), which is how netbird routes
 	// connections through the netstack in the browser.
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// DialTLSContext, when set, dials HTTPS connections without a proxy and
+	// returns them already past the TLS handshake. TLSClientConfig is not used
+	// for them.
+	DialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// DialTLS is the older form of DialTLSContext.
+	//
+	// Deprecated: Use DialTLSContext instead.
+	DialTLS func(network, addr string) (net.Conn, error)
+
+	// TINYGO: stored for API compatibility; the proxy CONNECT does not send
+	// them, and buffer sizes and protocols are not configurable.
+	ProxyConnectHeader     Header
+	GetProxyConnectHeader  func(ctx context.Context, proxyURL *url.URL, target string) (Header, error)
+	OnProxyConnectResponse func(ctx context.Context, proxyURL *url.URL, connectReq *Request, connectRes *Response) error
+	ReadBufferSize         int
+	WriteBufferSize        int
+	Protocols              *Protocols
 }
 
 var DefaultTransport RoundTripper = &Transport{}

@@ -55,6 +55,12 @@ func (t *Transport) connect(req *Request) (conn net.Conn, usingProxy bool, proxy
 		}
 	}
 	switch {
+	case pu == nil && req.URL.Scheme == "https" && t.DialTLSContext != nil:
+		conn, err = t.DialTLSContext(ctx, "tcp", addr)
+		return conn, false, "", err
+	case pu == nil && req.URL.Scheme == "https" && t.DialTLS != nil:
+		conn, err = t.DialTLS("tcp", addr)
+		return conn, false, "", err
 	case pu == nil:
 		conn, err = t.dial(ctx, "tcp", addr)
 	case pu.Scheme == "socks5" || pu.Scheme == "socks5h":

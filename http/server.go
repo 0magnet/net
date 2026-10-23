@@ -2895,6 +2895,10 @@ type Server struct {
 	// automatically.
 	TLSNextProto map[string]func(*Server, *tls.Conn, Handler)
 
+	// Protocols is the set of protocols accepted by the server. TINYGO: stored
+	// only; the server speaks HTTP/1 and uses TLSNextProto for anything else.
+	Protocols *Protocols
+
 	// HTTP2 configures HTTP/2 connections.
 	//
 	// This field does not yet have any effect.

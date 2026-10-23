@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
+	"strings"
 )
 
 // A Resolver looks up names and numbers.
@@ -119,9 +121,68 @@ func LookupPort(network, service string) (port int, err error) {
 
 // LookupPort looks up the port for the given network and service.
 //
-// TINYGO: not implemented; netdev provides no service database.
+// TINYGO: a decimal port, or a name from /etc/services.
 func (r *Resolver) LookupPort(ctx context.Context, network, service string) (port int, err error) {
-	return 0, errors.New("net:LookupPort not implemented")
+	if service == "" {
+		return 0, nil
+	}
+	n := 0
+	for i := 0; i < len(service); i++ {
+		c := service[i]
+		if c < '0' || c > '9' {
+			n = -1
+			break
+		}
+		if n = n*10 + int(c-'0'); n > 0xFFFF {
+			return 0, &AddrError{Err: "invalid port", Addr: service}
+		}
+	}
+	if n >= 0 {
+		return n, nil
+	}
+	proto := "tcp"
+	switch network {
+	case "udp", "udp4", "udp6":
+		proto = "udp"
+	}
+	if p, ok := servicePort(proto, service); ok {
+		return p, nil
+	}
+	return 0, &DNSError{Err: "unknown port", Name: network + "/" + service, IsNotFound: true}
+}
+
+// servicePort finds service's port for proto in /etc/services.
+func servicePort(proto, service string) (int, bool) {
+	data, err := os.ReadFile("/etc/services")
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		portProto := strings.SplitN(f[1], "/", 2)
+		if len(portProto) != 2 || portProto[1] != proto {
+			continue
+		}
+		for _, name := range append([]string{f[0]}, f[2:]...) {
+			if name == service {
+				p := 0
+				for _, c := range portProto[0] {
+					if c < '0' || c > '9' {
+						return 0, false
+					}
+					p = p*10 + int(c-'0')
+				}
+				return p, p <= 0xFFFF
+			}
+		}
+	}
+	return 0, false
 }
 
 // An SRV represents a single DNS SRV record.

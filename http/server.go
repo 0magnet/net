@@ -1908,7 +1908,47 @@ func (c *conn) serve(ctx context.Context) {
 		}
 	}()
 
-	// TINYGO: Removed TLS conn check
+	// TINYGO: as in Go, finish the handshake, record the TLS state for
+	// Request.TLS and hand an ALPN protocol to its TLSNextProto handler. There
+	// is no built-in HTTP/2; a handler such as x/net/http2's can serve it.
+	type connectionStater interface {
+		ConnectionState() tls.ConnectionState
+	}
+	type handshakeContexter interface {
+		HandshakeContext(ctx context.Context) error
+	}
+	if connStater, ok := c.rwc.(connectionStater); ok {
+		tlsTO := c.server.tlsHandshakeTimeout()
+		if tlsTO > 0 {
+			dl := time.Now().Add(tlsTO)
+			c.rwc.SetReadDeadline(dl)
+			c.rwc.SetWriteDeadline(dl)
+		}
+		var err error
+		if handshaker, ok := c.rwc.(handshakeContexter); ok {
+			err = handshaker.HandshakeContext(ctx)
+		}
+		if err != nil {
+			// TINYGO: no 400 for plaintext HTTP sent to a TLS port, since
+			// tls.RecordHeaderError is not on every target.
+			c.server.logf("http: TLS handshake error from %s: %v", c.rwc.RemoteAddr(), err)
+			return
+		}
+		if tlsTO > 0 {
+			c.rwc.SetReadDeadline(time.Time{})
+			c.rwc.SetWriteDeadline(time.Time{})
+		}
+		c.tlsState = new(tls.ConnectionState)
+		*c.tlsState = connStater.ConnectionState()
+		proto := c.tlsState.NegotiatedProtocol
+		if tlsConn, ok := c.rwc.(*tls.Conn); ok && validNextProto(proto) {
+			if fn := c.server.TLSNextProto[proto]; fn != nil {
+				c.setState(c.rwc, StateActive, skipHooks)
+				fn(c.server, tlsConn, serverHandler{c.server})
+			}
+			return
+		}
+	}
 
 	// HTTP/1.x from here on.
 

@@ -68,7 +68,7 @@ func (p *netPoller) arm(pd *pollDesc) {
 func (p *netPoller) loop() {
 	events := make([]syscall.EpollEvent, 64)
 	for {
-		n, err := syscall.EpollWait(p.be.epfd, events, -1)
+		n, err := epollWait(p.be.epfd, events)
 		if err != nil {
 			if err == syscall.EINTR {
 				continue

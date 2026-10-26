@@ -1,4 +1,4 @@
-//go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm && scheduler.tasks
+//go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm && (scheduler.tasks || scheduler.cores)
 
 // TINYGO: goroutines share one thread, so the poller goroutine parks in the
 // runtime poller until its epoll fd is readable, then collects the events.

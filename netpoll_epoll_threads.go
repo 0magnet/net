@@ -1,4 +1,4 @@
-//go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm && !scheduler.tasks
+//go:build linux && !baremetal && !nintendoswitch && !wasm_unknown && !tinygo.wasm && !scheduler.tasks && !scheduler.cores
 
 // TINYGO: the poller goroutine has its own thread and blocks in epoll_wait.
 

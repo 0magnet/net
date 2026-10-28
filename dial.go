@@ -195,12 +195,16 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (Conn
 			return nil, err
 		}
 		return DialUDP(network, nil, raddr)
-	case "unix":
+	case "unix", "unixgram", "unixpacket":
 		raddr, err := ResolveUnixAddr(network, address)
 		if err != nil {
 			return nil, err
 		}
-		return DialUnix(network, nil, raddr)
+		c, err := DialUnix(network, nil, raddr)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	}
 
 	return nil, fmt.Errorf("Network %s not supported", network)
@@ -338,13 +342,13 @@ func parseNetwork(ctx context.Context, network string, needsProto bool) (afnet s
 // See Go "net" package Listen() for more information.
 //
 // Note: Tinygo Listen supports a subset of networks supported by Go Listen,
-// specifically: "tcp", "tcp4", "tcp6" and, on the host target, "unix".
+// specifically: "tcp", "tcp4", "tcp6" and, on the host target, "unix" and "unixpacket".
 func Listen(network, address string) (Listener, error) {
 
 	//	println("Listen", address)
 	switch network {
 	case "tcp", "tcp4", "tcp6":
-	case "unix":
+	case "unix", "unixpacket":
 		laddr, err := ResolveUnixAddr(network, address)
 		if err != nil {
 			return nil, err
@@ -364,11 +368,20 @@ func Listen(network, address string) (Listener, error) {
 
 // ListenPacket announces on the local network address.
 //
-// TINYGO: only UDP networks are supported, backed by ListenUDP; the
-// returned PacketConn is a *UDPConn.
+// TINYGO: only "udp", "udp4" and, on the host target, "unixgram" are supported.
 func ListenPacket(network, address string) (PacketConn, error) {
 	switch network {
 	case "udp", "udp4":
+	case "unixgram":
+		laddr, err := ResolveUnixAddr(network, address)
+		if err != nil {
+			return nil, err
+		}
+		c, err := ListenUnixgram(network, laddr)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
 	default:
 		return nil, fmt.Errorf("Network %s not supported", network)
 	}

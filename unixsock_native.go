@@ -12,9 +12,8 @@ import (
 
 var errMissingAddress = errors.New("missing address")
 
-// TINYGO: stream Unix domain sockets on the host target, on the same
-// non-blocking fd and poller the TCP code uses (netdev_native.go). Datagram and
-// seqpacket networks are not supported.
+// TINYGO: Unix domain sockets on the host target, on the same non-blocking fd
+// and poller the TCP code uses (netdev_native.go).
 
 func unixSockaddr(a *UnixAddr) *syscall.SockaddrUnix {
 	if a == nil {
@@ -23,15 +22,28 @@ func unixSockaddr(a *UnixAddr) *syscall.SockaddrUnix {
 	return &syscall.SockaddrUnix{Name: a.Name}
 }
 
+func unixSotype(network string) (int, bool) {
+	switch network {
+	case "unix":
+		return syscall.SOCK_STREAM, true
+	case "unixgram":
+		return syscall.SOCK_DGRAM, true
+	case "unixpacket":
+		return syscall.SOCK_SEQPACKET, true
+	}
+	return 0, false
+}
+
 // DialUnix acts like [Dial] for Unix networks.
 func DialUnix(network string, laddr, raddr *UnixAddr) (*UnixConn, error) {
-	if network != "unix" {
+	sotype, ok := unixSotype(network)
+	if !ok {
 		return nil, &OpError{Op: "dial", Net: network, Err: UnknownNetworkError(network)}
 	}
 	if raddr == nil {
 		return nil, &OpError{Op: "dial", Net: network, Err: errMissingAddress}
 	}
-	fd, err := netdev.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	fd, err := netdev.Socket(syscall.AF_UNIX, sotype, 0)
 	if err != nil {
 		return nil, &OpError{Op: "dial", Net: network, Addr: raddr, Err: err}
 	}
@@ -76,13 +88,14 @@ func unixConnect(fd int, sa *syscall.SockaddrUnix) error {
 
 // ListenUnix acts like [Listen] for Unix networks.
 func ListenUnix(network string, laddr *UnixAddr) (*UnixListener, error) {
-	if network != "unix" {
+	sotype, ok := unixSotype(network)
+	if !ok || sotype == syscall.SOCK_DGRAM {
 		return nil, &OpError{Op: "listen", Net: network, Err: UnknownNetworkError(network)}
 	}
 	if laddr == nil || laddr.Name == "" {
 		return nil, &OpError{Op: "listen", Net: network, Err: errMissingAddress}
 	}
-	fd, err := netdev.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	fd, err := netdev.Socket(syscall.AF_UNIX, sotype, 0)
 	if err != nil {
 		return nil, &OpError{Op: "listen", Net: network, Addr: laddr, Err: err}
 	}
@@ -104,7 +117,26 @@ func (l *UnixListener) AcceptUnix() (*UnixConn, error) {
 	if err != nil {
 		return nil, &OpError{Op: "accept", Net: "unix", Addr: l.laddr, Err: err}
 	}
-	return &UnixConn{fd: fd, laddr: l.laddr, raddr: &UnixAddr{Net: "unix"}}, nil
+	return &UnixConn{fd: fd, laddr: l.laddr, raddr: &UnixAddr{Net: l.laddr.Net}}, nil
+}
+
+// ListenUnixgram acts like [ListenPacket] for Unix networks.
+func ListenUnixgram(network string, laddr *UnixAddr) (*UnixConn, error) {
+	if network != "unixgram" {
+		return nil, &OpError{Op: "listen", Net: network, Err: UnknownNetworkError(network)}
+	}
+	if laddr == nil || laddr.Name == "" {
+		return nil, &OpError{Op: "listen", Net: network, Err: errMissingAddress}
+	}
+	fd, err := netdev.Socket(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return nil, &OpError{Op: "listen", Net: network, Addr: laddr, Err: err}
+	}
+	if err := syscall.Bind(fd, unixSockaddr(laddr)); err != nil {
+		netdev.Close(fd)
+		return nil, &OpError{Op: "listen", Net: network, Addr: laddr, Err: err}
+	}
+	return &UnixConn{fd: fd, laddr: laddr}, nil
 }
 
 // Accept implements the Accept method in the [Listener] interface.

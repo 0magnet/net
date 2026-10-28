@@ -179,3 +179,8 @@ func (c *UnixConn) WriteToUnix(b []byte, addr *UnixAddr) (int, error) {
 
 // File is not implemented on js: the listener has no OS file descriptor.
 func (l *UnixListener) File() (*os.File, error) { return nil, errFileNotImplemented }
+
+// ListenUnixgram is not implemented on js.
+func ListenUnixgram(network string, laddr *UnixAddr) (*UnixConn, error) {
+	return nil, errUnixPacketNotImplemented
+}

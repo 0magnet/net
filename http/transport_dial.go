@@ -55,12 +55,22 @@ func (t *Transport) connect(req *Request) (conn net.Conn, usingProxy bool, proxy
 		}
 	}
 	switch {
-	case pu == nil && req.URL.Scheme == "https" && t.DialTLSContext != nil:
-		conn, err = t.DialTLSContext(ctx, "tcp", addr)
-		return conn, false, "", err
-	case pu == nil && req.URL.Scheme == "https" && t.DialTLS != nil:
-		conn, err = t.DialTLS("tcp", addr)
-		return conn, false, "", err
+	case pu == nil && req.URL.Scheme == "https" && (t.DialTLSContext != nil || t.DialTLS != nil):
+		if t.DialTLSContext != nil {
+			conn, err = t.DialTLSContext(ctx, "tcp", addr)
+		} else {
+			conn, err = t.DialTLS("tcp", addr)
+		}
+		if tc, ok := conn.(*tls.Conn); ok && err == nil {
+			// Handshake here, in case DialTLS didn't. TLSNextProto depends on it.
+			if err = tc.HandshakeContext(ctx); err != nil {
+				conn.Close()
+			}
+		}
+		if err != nil {
+			return nil, false, "", err
+		}
+		return conn, false, "", nil
 	case pu == nil:
 		conn, err = t.dial(ctx, "tcp", addr)
 	case pu.Scheme == "socks5" || pu.Scheme == "socks5h":
@@ -71,7 +81,7 @@ func (t *Transport) connect(req *Request) (conn net.Conn, usingProxy bool, proxy
 		}
 	case pu.Scheme == "http" || pu.Scheme == "https":
 		if conn, err = t.dial(ctx, "tcp", canonicalAddr(pu)); err == nil && pu.Scheme == "https" {
-			conn, err = t.tlsClient(ctx, conn, pu.Hostname())
+			conn, err = t.tlsClient(ctx, conn, pu.Hostname(), req.requiresHTTP1())
 		}
 		if err == nil {
 			auth := proxyAuthorization(pu.User)
@@ -90,20 +100,23 @@ func (t *Transport) connect(req *Request) (conn net.Conn, usingProxy bool, proxy
 		return nil, false, "", err
 	}
 	if req.URL.Scheme == "https" {
-		if conn, err = t.tlsClient(ctx, conn, req.URL.Hostname()); err != nil {
+		if conn, err = t.tlsClient(ctx, conn, req.URL.Hostname(), req.requiresHTTP1()); err != nil {
 			return nil, false, "", err
 		}
 	}
 	return conn, usingProxy, proxyAuth, nil
 }
 
-func (t *Transport) tlsClient(ctx context.Context, conn net.Conn, serverName string) (net.Conn, error) {
+func (t *Transport) tlsClient(ctx context.Context, conn net.Conn, serverName string, onlyH1 bool) (net.Conn, error) {
 	cfg := &tls.Config{}
 	if t.TLSClientConfig != nil {
 		cfg = t.TLSClientConfig.Clone()
 	}
 	if cfg.ServerName == "" {
 		cfg.ServerName = serverName
+	}
+	if onlyH1 {
+		cfg.NextProtos = nil
 	}
 	tc := tls.Client(conn, cfg)
 	hctx := ctx

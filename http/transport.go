@@ -18,6 +18,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -50,8 +51,8 @@ type Transport struct {
 	// DisableKeepAlives, if true, disables HTTP keep-alives.
 	DisableKeepAlives bool
 
-	// ForceAttemptHTTP2 mirrors Go. This transport speaks HTTP/1 only, so it
-	// has no effect here.
+	// ForceAttemptHTTP2 mirrors Go. This transport has no built in HTTP/2, so it
+	// has no effect here. HTTP/2 works through TLSNextProto, as x/net/http2 sets.
 	ForceAttemptHTTP2 bool
 
 	// DisableCompression, if true, prevents the Transport from requesting
@@ -125,7 +126,12 @@ type Transport struct {
 	ReadBufferSize         int
 	WriteBufferSize        int
 	Protocols              *Protocols
+
+	altProto atomic.Value // of nil or map[string]RoundTripper, key is URI scheme
 }
+
+// altMu guards changing altProto. It is not a field so that Clone can copy t.
+var altMu sync.Mutex
 
 var DefaultTransport RoundTripper = &Transport{}
 
@@ -170,7 +176,42 @@ func ProxyURL(fixedURL *url.URL) func(*Request) (*url.URL, error) {
 // ErrSkipAltProtocol is a sentinel error value defined by Transport.RegisterProtocol.
 var ErrSkipAltProtocol = errors.New("net/http: skip alternate protocol")
 
-// RegisterProtocol registers a new protocol with scheme. TINYGO: no-op; the
-// wasm build performs round trips via the host fetch API and does not dispatch
-// on registered alternate protocols.
-func (t *Transport) RegisterProtocol(scheme string, rt RoundTripper) {}
+// RegisterProtocol registers a new protocol with scheme.
+// The [Transport] will pass requests using the given scheme to rt.
+// It is rt's responsibility to simulate HTTP request semantics.
+//
+// RegisterProtocol can be used by other packages to provide
+// implementations of protocol schemes like "ftp" or "file".
+//
+// If rt.RoundTrip returns [ErrSkipAltProtocol], the Transport will
+// handle the [Transport.RoundTrip] itself for that one request, as if the
+// protocol were not registered.
+func (t *Transport) RegisterProtocol(scheme string, rt RoundTripper) {
+	altMu.Lock()
+	defer altMu.Unlock()
+	oldMap, _ := t.altProto.Load().(map[string]RoundTripper)
+	if _, exists := oldMap[scheme]; exists {
+		panic(errors.New("protocol " + scheme + " already registered"))
+	}
+	newMap := make(map[string]RoundTripper, len(oldMap)+1)
+	for k, v := range oldMap {
+		newMap[k] = v
+	}
+	newMap[scheme] = rt
+	t.altProto.Store(newMap)
+}
+
+// alternateRoundTripper returns the alternate RoundTripper to use
+// for this request if the Request's URL scheme requires one,
+// or nil for the normal case of using the Transport.
+func (t *Transport) alternateRoundTripper(req *Request) RoundTripper {
+	if req.URL.Scheme == "https" && req.requiresHTTP1() {
+		return nil
+	}
+	altProto, _ := t.altProto.Load().(map[string]RoundTripper)
+	return altProto[req.URL.Scheme]
+}
+
+type erringRoundTripper interface {
+	RoundTripErr() error
+}

@@ -14,6 +14,7 @@ package http
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -316,7 +317,11 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 		}
 	}
 
-	// TINYGO: Skipping alternate round tripper
+	if altRT := t.alternateRoundTripper(req); altRT != nil {
+		if resp, err := altRT.RoundTrip(req); err != ErrSkipAltProtocol {
+			return resp, err
+		}
+	}
 
 	if !isHTTP {
 		req.closeBody()
@@ -339,6 +344,18 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	if err != nil {
 		req.closeBody()
 		return nil, ctxErr(ctx, err)
+	}
+	if tc, ok := conn.(*tls.Conn); ok && req.URL.Scheme == "https" {
+		if proto := tc.ConnectionState().NegotiatedProtocol; proto != "" {
+			if next, ok := t.TLSNextProto[proto]; ok {
+				alt := next(canonicalAddr(req.URL), tc)
+				if e, ok := alt.(erringRoundTripper); ok {
+					req.closeBody()
+					return nil, e.RoundTripErr()
+				}
+				return alt.RoundTrip(req)
+			}
+		}
 	}
 	ctxDeadline, _ := ctx.Deadline()
 	if !ctxDeadline.IsZero() {

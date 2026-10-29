@@ -18,6 +18,7 @@ func adoptFD(f *os.File) (fd, sotype int, lsa syscall.Sockaddr, err error) {
 		return -1, 0, nil, os.NewSyscallError("dup", err)
 	}
 	syscall.CloseOnExec(fd)
+	poller.opened(fd)
 	if err = syscall.SetNonblock(fd, true); err == nil {
 		if sotype, err = syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_TYPE); err == nil {
 			lsa, err = syscall.Getsockname(fd)

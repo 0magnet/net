@@ -81,6 +81,7 @@ func (*hostNetdev) Socket(domain, stype, protocol int) (int, error) {
 		syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
 	}
 
+	poller.opened(fd)
 	return fd, nil
 }
 
@@ -181,6 +182,7 @@ func (*hostNetdev) Accept(sockfd int) (int, netip.AddrPort, error) {
 		default:
 			return -1, netip.AddrPort{}, err
 		}
+		poller.opened(nfd)
 		return nfd, addrPortFromSockaddr(sa), nil
 	}
 }

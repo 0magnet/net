@@ -51,6 +51,10 @@ type netPoller struct {
 
 	mu  sync.Mutex
 	fds map[int]*pollDesc
+
+	// Fds closed through close and not yet handed out again by opened. A wait
+	// on one of them fails, as Go does for a pollDesc that is closing.
+	closed map[int]struct{}
 }
 
 var poller netPoller
@@ -62,6 +66,7 @@ func (p *netPoller) init() {
 			return
 		}
 		p.fds = make(map[int]*pollDesc)
+		p.closed = make(map[int]struct{})
 		go p.loop()
 	})
 }
@@ -79,6 +84,12 @@ func (p *netPoller) wait(fd int, write bool, deadline time.Time) error {
 	}
 
 	p.mu.Lock()
+	if _, ok := p.closed[fd]; ok {
+		// A reader that saw EAGAIN just before a concurrent close would
+		// otherwise park on a dead fd, or one reused by another socket.
+		p.mu.Unlock()
+		return errPollClosed
+	}
 	pd := p.fds[fd]
 	if pd == nil {
 		pd = &pollDesc{fd: fd}
@@ -201,6 +212,9 @@ func (p *netPoller) interrupt(fd int, write bool, deadline time.Time) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if _, ok := p.closed[fd]; ok {
+		return
+	}
 	pd := p.fds[fd]
 	if pd == nil {
 		pd = &pollDesc{fd: fd}
@@ -228,11 +242,17 @@ func (p *netPoller) interrupt(fd int, write bool, deadline time.Time) {
 // close wakes every goroutine parked on fd with errPollClosed and stops polling
 // it. It must be called just before the fd is actually closed.
 func (p *netPoller) close(fd int) {
+	if pollKeepClosed {
+		p.init()
+	}
 	if p.err != nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if pollKeepClosed {
+		p.closed[fd] = struct{}{}
+	}
 	pd := p.fds[fd]
 	if pd == nil {
 		return
@@ -241,6 +261,17 @@ func (p *netPoller) close(fd int) {
 	delete(p.fds, fd)
 	pd.readers = wake(pd.readers, errPollClosed)
 	pd.writers = wake(pd.writers, errPollClosed)
+}
+
+// opened forgets that fd was closed, once the OS hands its number to a new
+// socket. Every socket the netdev creates must pass through it.
+func (p *netPoller) opened(fd int) {
+	if !pollKeepClosed {
+		return
+	}
+	p.mu.Lock()
+	delete(p.closed, fd)
+	p.mu.Unlock()
 }
 
 // wake sends err to every waiter in s and returns s emptied, keeping its

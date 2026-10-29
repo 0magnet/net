@@ -16,6 +16,8 @@ import (
 	"unsafe"
 )
 
+const pollKeepClosed = false
+
 const (
 	pollMinIdle = time.Millisecond
 	pollMaxIdle = 10 * time.Millisecond

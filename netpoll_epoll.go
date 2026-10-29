@@ -6,6 +6,10 @@ package net
 
 import "syscall"
 
+// The poller remembers closed fds until the netdev opens them again. Only
+// Linux is tested with this, so the other backends turn it off.
+const pollKeepClosed = true
+
 type pollBackend struct {
 	epfd int
 	ev   syscall.EpollEvent // scratch for arm, guarded by mu

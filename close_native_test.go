@@ -127,6 +127,7 @@ func TestCloseBlockedRead(t *testing.T) {
 	if err := syscall.SetNonblock(pair[0], true); err != nil {
 		t.Fatal(err)
 	}
+	poller.opened(pair[0])
 	c := &TCPConn{fd: pair[0], net: "tcp"}
 	done := make(chan error, 1)
 	go func() { _, err := c.Read(make([]byte, 1)); done <- err }()
@@ -158,6 +159,7 @@ func TestCloseBlockedWrite(t *testing.T) {
 	if err := syscall.SetNonblock(pair[0], true); err != nil {
 		t.Fatal(err)
 	}
+	poller.opened(pair[0])
 	c := &TCPConn{fd: pair[0], net: "tcp"}
 	done := make(chan error, 1)
 	go func() { _, err := c.Write(make([]byte, 1<<20)); done <- err }()
@@ -172,5 +174,39 @@ func TestCloseBlockedWrite(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Write did not stop after close")
+	}
+}
+
+// A Read that finds no data while another goroutine closes the conn must not
+// park after the close, where nothing would wake it.
+func TestCloseRacingRead(t *testing.T) {
+	l, err := Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for i := 0; i < 2000; i++ {
+		c, err := Dial("tcp4", l.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := l.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			c.Read(make([]byte, 1))
+			close(done)
+		}()
+		for j := 0; j < i%64; j++ {
+		}
+		c.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Read still blocked 2s after Close, iteration %d", i)
+		}
+		p.Close()
 	}
 }

@@ -6,6 +6,8 @@ package net
 
 import "syscall"
 
+const pollKeepClosed = false
+
 type pollBackend struct {
 	kq      int
 	changes [2]syscall.Kevent_t // scratch for arm, guarded by mu

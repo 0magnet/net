@@ -406,10 +406,59 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 		}
 		return nil, ctxErr(ctx, err)
 	}
+	if resp.isProtocolSwitch() {
+		// TINYGO: the caller owns conn after a 101, as with Go's errCallerOwnsConn,
+		// so ctx cancellation, onEOF and the deadlines stop applying to it.
+		if !stop() {
+			conn.Close()
+			return nil, ctx.Err()
+		}
+		req.onEOF = nil
+		conn.SetDeadline(time.Time{})
+		resp.Body = newReadWriteCloserBody(reader, conn)
+		return resp, nil
+	}
 	if !headerDeadline.IsZero() {
 		conn.SetReadDeadline(ctxDeadline)
 	}
 	return resp, nil
+}
+
+func newReadWriteCloserBody(br *bufio.Reader, rwc io.ReadWriteCloser) io.ReadWriteCloser {
+	body := &readWriteCloserBody{ReadWriteCloser: rwc}
+	if br.Buffered() != 0 {
+		body.br = br
+	}
+	return body
+}
+
+// readWriteCloserBody is the Response.Body type used when we want to
+// give users write access to the Body through the underlying connection.
+type readWriteCloserBody struct {
+	_  incomparable
+	br *bufio.Reader // used until empty
+	io.ReadWriteCloser
+}
+
+func (b *readWriteCloserBody) Read(p []byte) (n int, err error) {
+	if b.br != nil {
+		if n := b.br.Buffered(); len(p) > n {
+			p = p[:n]
+		}
+		n, err = b.br.Read(p)
+		if b.br.Buffered() == 0 {
+			b.br = nil
+		}
+		return n, err
+	}
+	return b.ReadWriteCloser.Read(p)
+}
+
+func (b *readWriteCloserBody) CloseWrite() error {
+	if cw, ok := b.ReadWriteCloser.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return fmt.Errorf("CloseWrite: %w", ErrNotSupported)
 }
 
 // ctxErr returns ctx's error in place of err once ctx is done, since its
